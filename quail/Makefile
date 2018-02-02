@@ -1,7 +1,8 @@
 .PHONY: test
 
+PWD_DIR=$(shell pwd)
 CXX ?= g++
-CXXFLAGS ?= -std=c++11 -g -O2 -I./include  -L/mnt/d/Menooker/CXX/Disasm/zydis/build 
+CXXFLAGS ?= -std=c++11 -g -O2 -I$(PWD_DIR)/third_party/include -L$(PWD_DIR)/third_party/bin/
 LIBS ?= -lpthread
 
 qtest: main.o
