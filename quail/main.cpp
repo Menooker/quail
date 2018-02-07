@@ -109,7 +109,7 @@ void softdirtytest()
 	th.join();
 }
 //#include <sys/stat.h>
-int main(void)
+int main2(void)
 {
 	//lstat("", nullptr);
 	//stat("", nullptr);
@@ -172,3 +172,14 @@ int main(void)
 	return 0;
 }
 
+
+extern void PrintInstruction(uint8_t * instr);
+extern int DoInterpreteSize(uint8_t * instr, int& outsize);
+int main()
+{
+	unsigned char a[] = { 0x4c,0x89,0x47,0x08 ,0xcc,0xcc};
+	PrintInstruction(a);
+	int sz;
+	DoInterpreteSize(a, sz);
+	printf("%d\n", sz);
+}

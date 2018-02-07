@@ -60,10 +60,28 @@
   <ImportGroup Label="Shared" />
   <ImportGroup Label="PropertySheets" />
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <IncludePath>$(SolutionDir)/quail/third_party/include;$(SolutionDir)/../linux_include;$(SolutionDir)/../linux_include/x86_64-linux-gnu;$(IncludePath)</IncludePath>
+  </PropertyGroup>
   <ItemGroup>
+    <ClCompile Include="inline_hook.cpp" />
+    <ClCompile Include="Interpreter.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="quail.cpp" />
+    <ClCompile Include="quail_reg.cpp" />
+    <ClCompile Include="read.cpp" />
+    <ClCompile Include="readtest.cpp" />
+    <ClCompile Include="soft_dirty.cpp" />
+    <ClCompile Include="user_hooks.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="BypassAlloactor.h" />
+    <ClInclude Include="bypass_mmap.h" />
+    <ClInclude Include="HookFunction.h" />
+    <ClInclude Include="LockFreeHashmap.h" />
+    <ClInclude Include="ObjectPool.h" />
+    <ClInclude Include="PageInfo.h" />
+    <ClInclude Include="util.h" />
   </ItemGroup>
   <ItemDefinitionGroup />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -101,7 +101,7 @@ HookStatus HookIt(void* oldfunc, void** poutold, void* newfunc)
 	uint8_t* readPointer = (uint8_t*)oldfunc;
 	size_t length = 0;
 	const unsigned char patch_target[] = { 0x83, 0x3d }; //check cmp relative
-	const unsigned char patch_target_jne[] = { 0x75 }; //check jne relative
+	const unsigned char patch_target_jne[] = { 0x75 , 0x77 }; //check jne/ja relative
 	unsigned char* patch_addr=nullptr;
 	unsigned char* patch_addr_jne = nullptr;
 
@@ -118,9 +118,13 @@ HookStatus HookIt(void* oldfunc, void** poutold, void* newfunc)
 			patch_addr = readPointer;
 		}
 		//if it is a jne relative instr
-		if (!memcmp(readPointer, patch_target_jne, sizeof(patch_target_jne)))
+		for(int i=0;i<sizeof(patch_target_jne);i++)
 		{
-			patch_addr_jne = readPointer;
+			if (*readPointer== patch_target_jne[i])
+			{
+				patch_addr_jne = readPointer;
+				break;
+			}
 		}
 		readPointer += instruction.length;
 		length += instruction.length;

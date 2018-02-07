@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 #include <limits.h>
 #include "PFishHook.h"
+#include <ucontext.h>
 
 static std::thread LockerThread;
 bool init_called = false;
@@ -27,7 +28,7 @@ extern BypassAlloactor alloactor;
 extern quail::LockFreeHashmap<4096, uintptr_t, PageInfo*, BypassAlloactor> page_map;
 extern thread_local bool flag_bypass_mmap;
 
-
+extern bool isCaptureAll;
 
 #ifdef __GNUC__
 #define  likely(x)        __builtin_expect(!!(x), 1) 
@@ -37,19 +38,87 @@ extern thread_local bool flag_bypass_mmap;
 #define  unlikely(x)      (x)
 #endif
 
-extern thread_local bool MallocTouch;
-static void(*old_segfault_sigaction)(int signal, siginfo_t *si, void *arg);
+#define EFLAG_TF_MASK ((uint64_t)1<<8)
+
+thread_local void* SingleStepPage = nullptr;
+thread_local int SingleStepProt = 0;
+thread_local int SingleStepSize = 0;
+thread_local void* LastFault = 0;
+
+typedef void(*ptrsignalhandler)(int signal, siginfo_t *si, void *arg);
+ptrsignalhandler old_segfault_sigaction;
+ptrsignalhandler old_trap_sigaction;
+extern void InitInterpreter();
+typedef void* PVOID;
+extern int DoInterprete(uint8_t * instr, ucontext* context, PVOID& outfrom, PVOID& outto, int& outsize);
+extern int DoInterpreteSize(uint8_t * instr, int& outsize,uint64_t rcx);
+extern void PrintInstruction(uint8_t * instr);
 
 int sigaction_bypass(int sig, const struct sigaction *__restrict act,
 	struct sigaction *__restrict oact);
+
+
+static void MProtectRange(void* ptr, size_t n, bool writable)
+{
+	char* start = (char*)AlignToPage(ptr);
+	int prot = -1;
+	int mask = writable ? 0xffffffff : ~PROT_WRITE;
+	int cnt = 0;
+	for (char* i = start; i <= (char*)ptr + n - 1; i += PageSize)
+	{
+		auto itm = page_map.find((uintptr_t)i);
+		if (!itm)
+			goto TOUCH_ALL;
+		if (prot == -1)
+		{
+			prot = itm->prot;
+		}
+		else if(prot != itm->prot)
+		{
+			goto TOUCH_ALL;
+		}
+		cnt++;
+		itm->count++;
+	}
+	if (prot != -1)
+	{
+		//if (!writable && (uintptr_t)start >> 32 == 0)
+		//	fprintf(stderr, "mprotect chunk %p, size %d\n", start,cnt);
+		int status;
+		if ((status = mprotect(start, cnt * PageSize, prot & mask)) != 0)
+		{
+			fprintf(stderr, "Signal: Set protect error: %d\n", status);
+		}
+	}
+	return;
+TOUCH_ALL:
+	//fprintf(stderr, "TOUCH_ALL\n");
+	for (char* i = start; i <= (char*)ptr + n - 1; i += PageSize)
+	{
+		auto itm = page_map.find((uintptr_t)i);
+		if (itm)
+		{
+			itm->count++; //fix-me : use the correct count
+			//if (!writable && (uintptr_t)i >> 32 == 0)
+			//	fprintf(stderr, "mprotect single %016x", i);
+			mprotect(i, PageSize, itm->prot & mask);
+		}
+	}
+}
+
+
+PageInfo* get_page_info(uintptr_t p)
+{
+	return page_map.find(p);
+}
 void segfault_sigaction(int sig, siginfo_t *si, void *arg)
 {
-	//fprintf(stderr,"Caught segfault at address %p\n", si->si_addr);
 	auto itm = page_map.find((uintptr_t)AlignToPage(si->si_addr));
 	if (unlikely(itm == nullptr || IsPageNotWritable(itm)))
 	{
 		fprintf(stderr, "call old seg %p, page %p , itm=%p\n", 
 			old_segfault_sigaction, si->si_addr,itm);
+		sleep(-1);
 		if ((uintptr_t)old_segfault_sigaction == 0)
 		{
 			//printf("call default handler\n");
@@ -71,15 +140,154 @@ void segfault_sigaction(int sig, siginfo_t *si, void *arg)
 		return;
 	}
 
-	if (mprotect(AlignToPage(si->si_addr), PageSize, itm->prot) != 0)
+	if (isCaptureAll)
 	{
-		perror("Signal: Set protect error: ");
+
+		//fprintf(stderr, "Caught segfault at address %p\n", si->si_addr);
+		ucontext* context = (ucontext*)arg;
+		SingleStepPage = AlignToPage(si->si_addr);
+		SingleStepProt = itm->prot;
+		//if (mprotect(AlignToPage(si->si_addr), PageSize*2, itm->prot) != 0)
+		//{
+		uintptr_t delta = (uintptr_t)AlignToPage(si->si_addr) + PageSize - (uintptr_t)si->si_addr;
+		SingleStepSize = PageSize;
+		//bool isHalfSpan = false; //if the access spans over two pages and the latter page is also watched
+		if (delta < 512 / 8) //check if the memory access span accross two pages
+		{
+			//512-bit is the size of zmm register
+			/*int size;
+			if (DoInterpreteSize((uint8_t*)context->uc_mcontext.gregs[REG_RIP], size, context->uc_mcontext.gregs[REG_RCX]) < 0 || size==0)
+			{
+				PrintInstruction((uint8_t*)context->uc_mcontext.gregs[REG_RIP]);
+				exit(1);
+			}
+			if (size/8 > delta)
+			{*/
+			/*if(si->si_addr==LastFault)
+			{
+				fprintf(stderr, "Known double fault %p\n",si->si_addr);
+				PrintInstruction((uint8_t*)context->uc_mcontext.gregs[REG_RIP]);
+				auto itm2 = page_map.find((uintptr_t)AlignToPage(si->si_addr) + PageSize);
+				if (itm2)
+				{
+					SingleStepSize = PageSize * 2;
+					itm2->count++;
+				}
+				else
+					SingleStepSize = PageSize;
+			}
+			else*/
+			{
+				LastFault = AlignToPage(si->si_addr);
+			}
+		}
+		else
+		{
+			if (LastFault== (char*)AlignToPage(si->si_addr) - PageSize && AlignToPage(si->si_addr) == si->si_addr)
+			{
+				auto itm2 = page_map.find((uintptr_t)LastFault);
+				if (itm2)
+				{
+					SingleStepPage = LastFault;
+					SingleStepSize = 2 * PageSize;
+					mprotect(LastFault, PageSize, itm2->prot);
+				}
+			}
+			LastFault = 0;
+		}
+		int status;
+		if ((status=mprotect(AlignToPage(si->si_addr), PageSize, itm->prot)) != 0)
+		{
+			fprintf(stderr,"Signal: Set protect error: %d\n",status);
+		}
+
+		//}
+		context->uc_mcontext.gregs[REG_EFL]|= EFLAG_TF_MASK;
+		//fprintf(stderr, "segfault %p, page %p\n", context->uc_mcontext.gregs[REG_RIP], si->si_addr);
+
+		/*unsigned char *pc = (unsigned char *)context->uc_mcontext.gregs[REG_RIP];
+		void* from, *to;
+		int size;
+		int instrsize = DoInterprete(pc, context, from, to, size);
+		if(-1== instrsize)
+			exit(0);
+		if (mprotect(AlignToPage(si->si_addr), PageSize, itm->prot) != 0)
+		{
+			perror("Signal: Set protect error: ");
+		}
+		memcpy(to, from, size);
+		context->uc_mcontext.gregs[REG_RIP] += instrsize;
+		if (mprotect(AlignToPage(si->si_addr), PageSize, itm->prot & ~(PROT_WRITE)) != 0)
+		{
+			perror("Signal: Set protect error: ");
+		}*/
+	}
+	else
+	{
+		if (mprotect(AlignToPage(si->si_addr), PageSize, itm->prot) != 0)
+		{
+			perror("Signal: Set protect error: ");
+		}
 	}
 	itm->count++;
 	itm->unprotected = true;
 	//printf("Found item\n");
 }
+void trap_sigaction(int sig, siginfo_t *si, void *arg)
+{
+	ucontext* context = (ucontext*)arg;
+	if (si->si_addr == (char*)segfault_sigaction + 2)
+	{
+		fprintf(stderr, "Double fault\n");
+		//sleep(-1);
+	}
+	//fprintf(stderr, "TRAP!\n");
+	if (SingleStepPage)
+	{
+		//if (mprotect(SingleStepPage, PageSize * 2, SingleStepProt & ~(PROT_WRITE)) != 0)
+		//{
+		int status;
+		if ((status=mprotect(SingleStepPage, PageSize, SingleStepProt & ~(PROT_WRITE))) != 0)
+		{
+			fprintf(stderr, "Signal: Set protect error: %d\n", status);
+		}
+		if (SingleStepSize == 2 * PageSize)
+		{
+			mprotect(SingleStepPage, PageSize, SingleStepProt & ~(PROT_WRITE));
+		}
+		else if (SingleStepSize > 2 * PageSize)
+		{
+			fprintf(stderr, "Bad page size %d\n", SingleStepSize);
+		}
+		//}
+		
+		//fprintf(stderr, "TRAP %p! page %p\n", si->si_addr, SingleStepPage);
 
+		SingleStepPage = nullptr;
+		context->uc_mcontext.gregs[REG_EFL] &= ~EFLAG_TF_MASK;
+	}
+	else
+	{
+		if ((uintptr_t)old_trap_sigaction == 0)
+		{
+			struct sigaction sa;
+			memset(&sa, 0, sizeof(struct sigaction));
+			sigemptyset(&sa.sa_mask);
+			sa.sa_handler = SIG_DFL;
+			sa.sa_flags = SA_SIGINFO;
+
+			sigaction_bypass(SIGTRAP, &sa, nullptr);
+			raise(sig);
+			return;
+		}
+		else if ((uintptr_t)old_trap_sigaction == 1)
+		{
+			return;
+		}
+		old_trap_sigaction(sig, si, arg);
+		return;
+	}
+}
 //////////////////
 /*
 Special patch for gcc to avoid "Bad address" error
@@ -103,157 +311,65 @@ extern "C" __pid_t waitpid(__pid_t __pid, int *__stat_loc, int __options)
 	return ret;
 }
 
-
-
-
-/*
-def_name(fread);
-
-auto my_fread=[](void *__restrict ptr, size_t size, size_t n, FILE *__restrict stream)->size_t {
-		fprintf(stderr, "fread2 %p\n", stream);
-		TouchRange(ptr, size*n);
-		return CallOld(Name_fread(), size_t(), ptr, size, n, stream);
-};
-extern "C" size_t fread(void *__restrict ptr, size_t size, size_t n, FILE *__restrict stream)
-{
-	return CallHooked(Name_fread(), my_fread ,size_t(),ptr, size, n, stream);
-}*/
-
 typedef ssize_t(*ptrread)(int fd, void *buf, size_t nbytes);
 ptrread oldread;
 extern "C" ssize_t myread(int fd, void *buf, size_t nbytes)
 {
-	//fprintf(stderr, "[read] bytes %d buf %p\n", nbytes,buf);
-	TouchRange(buf, nbytes);
+	fprintf(stderr, "[read] bytes %zu buf %p\n", nbytes,buf);
+	if (isCaptureAll)
+		MProtectRange(buf, nbytes,true);
+	else
+		TouchRange(buf, nbytes);
 	ssize_t ret = oldread(fd, buf, nbytes);
+	if (isCaptureAll)
+		MProtectRange(buf, nbytes, false);
 	//fprintf(stderr, "[read] ret%d\n", ret);
 	return ret;
-}
-/*
-def_name(readlink);
-auto my_readlink = [](const char *__restrict path, char *__restrict buf, size_t len) -> ssize_t
-{
-	fprintf(stderr, "readlink %s\n", path);
-	TouchRange(buf, len);
-	return CallOld(Name_readlink(), ssize_t(), path, buf, len);
-};
-extern "C" ssize_t readlink(const char *__restrict path, char *__restrict buf, size_t len)
-{
-	return CallHooked(Name_readlink(), my_readlink, ssize_t(), path, buf, len);
 }
 
 def_name(__xstat)
 auto my_stat = [](int ver, const char *__restrict file, struct stat *__restrict buf)->int {
-	//fprintf(stderr, "stat %s\n", file);
-	TouchRange(buf, sizeof(struct stat));
-	return CallOld(Name___xstat(), int(0),ver, file, buf);
+	fprintf(stderr, "stat %s\n", file);
+	if (isCaptureAll)
+		MProtectRange(buf, sizeof(struct stat), true);
+	else
+		TouchRange(buf, sizeof(struct stat));
+	auto ret = CallOld(Name___xstat(), int(0), ver, file, buf);
+	if (isCaptureAll)
+		MProtectRange(buf, sizeof(struct stat), false);
+	return ret;
 };
 extern "C" int __xstat(int ver, const char *__restrict file, struct stat *__restrict buf) {
 	return CallHooked(Name___xstat(), my_stat, int(), ver, file, buf);
 }
 
-
-def_name(__lxstat)
-auto my_lstat = [](int ver, const char *__restrict file, struct stat *__restrict buf)->int {
-	fprintf(stderr, "lstat2 %s\n", file);
-	TouchRange(buf, sizeof(struct stat));
-	return CallOld(Name___lxstat(), int(0), ver, file, buf);
-};
-extern "C" int __lxstat(int ver,const char *__restrict file, struct stat *__restrict buf) {
-	return CallHooked(Name___lxstat(), my_lstat, int(),ver, file, buf);
-}
-
-def_name(__realpath_chk);
-auto my_realpath = [](const char *__restrict file, char *__restrict buf, size_t resolvedlen)->char* {
-	
-	if (buf)
-	{
-		TouchRange(buf, resolvedlen);
-	}
+typedef int(*ptrlxstat)(int ver, const char *__restrict file, struct stat *__restrict buf);
+ptrlxstat oldlxstat;
+extern "C" int mylxstat(int ver, const char *__restrict file, struct stat *__restrict buf) {
+	if (isCaptureAll)
+		MProtectRange(buf, sizeof(struct stat), true);
 	else
-	{
-		fprintf(stderr, "realpath %s\n", file);
-	}
-	MallocTouch = true;
-	char* ret= CallOld(Name___realpath_chk(), (char*)(0),  file, buf, resolvedlen);
-	MallocTouch = false;
+		TouchRange(buf, sizeof(struct stat));
+	auto ret = oldlxstat(ver, file, buf);
+	if (isCaptureAll)
+		MProtectRange(buf, sizeof(struct stat), false);
 	return ret;
-};
-extern "C" char* __realpath_chk(const char *__restrict file, char *__restrict buf, size_t resolvedlen) {
-	return CallHooked(Name___realpath_chk(), my_realpath, (char*)(0),  file, buf,resolvedlen);
 }
-
-
 
 def_name(__fxstat);
-auto my_fstat = [](int ver,int fd, struct stat *buf)->int {
-	//fprintf(stderr, "fstat %d\n", fd);
-	TouchRange(buf, sizeof(struct stat));
-	return CallOld(Name___fxstat(), int(),ver, fd, buf);
+auto my_fstat = [](int ver, int fd, struct stat *buf)->int {
+	if (isCaptureAll)
+		MProtectRange(buf, sizeof(struct stat), true);
+	else
+		TouchRange(buf, sizeof(struct stat));
+	auto ret = CallOld(Name___fxstat(), int(0), ver, fd, buf);
+	if (isCaptureAll)
+		MProtectRange(buf, sizeof(struct stat), false);
+	return ret;
 };
-extern "C" int __fxstat(int ver,int fd, struct stat *buf)
+extern "C" int __fxstat(int ver, int fd, struct stat *buf)
 {
-	return CallHooked(Name___fxstat(), my_fstat, int(),ver, fd, buf);
-}
-*/
-/*
-typedef size_t (*ptrfread)(void *__restrict ptr, size_t size, size_t n, FILE *__restrict stream);
-static ptrfread old_fread = nullptr;
-static ptrfread old_fread_unlocked = nullptr;
-extern "C" size_t fread(void *__restrict ptr, size_t size,size_t n, FILE *__restrict stream)
-{
-	if (!old_fread)
-	{
-		old_fread = (ptrfread)dlsym(RTLD_NEXT, "fread");
-		if (NULL == old_fread) {
-			fprintf(stderr, "Error in `dlsym`: %s\n", dlerror());
-		}
-	}
-	if (!init_called)
-	{
-		return old_fread(ptr, size, n, stream);
-	}
-	//fprintf(stderr, "fread %p\n", stream);
-	TouchRange(ptr, size*n);
-	return old_fread(ptr, size, n, stream);
-}*/
-/*
-extern "C" size_t fread_unlocked(void *__restrict ptr, size_t size, size_t n, FILE *__restrict stream)
-{
-	if (!old_fread_unlocked)
-	{
-		old_fread_unlocked = (ptrfread)dlsym(RTLD_NEXT, "fread_unlocked");
-		if (NULL == old_fread_unlocked) {
-			fprintf(stderr, "Error in `dlsym`: %s\n", dlerror());
-		}
-	}
-	if (!init_called)
-	{
-		return old_fread_unlocked(ptr, size, n, stream);
-	}
-	fprintf(stderr, "old_fread_unlocked %p\n", stream);
-	TouchRange(ptr, size*n);
-	return old_fread_unlocked(ptr, size, n, stream);
-}
-*/
-typedef char* (*ptrfgets)(char *__restrict __s, int __n, FILE *__restrict __stream);
-ptrfgets old_fgets = nullptr;
-extern "C" char *fgets(char *__restrict s, int n, FILE *__restrict stream)
-{
-	if (!old_fgets)
-	{
-		old_fgets = (ptrfgets)dlsym(RTLD_NEXT, "fgets");
-		if (NULL == old_fgets) {
-			fprintf(stderr, "Error in `dlsym`: %s\n", dlerror());
-		}
-	}
-	if (!init_called)
-	{
-		return old_fgets(s,  n, stream);
-	}
-	fprintf(stderr, "gets %p\n", stream);
-	TouchRange(s, n);
-	return old_fgets(s, n, stream);
+	return CallHooked(Name___fxstat(), my_fstat, int(), ver, fd, buf);
 }
 
 ///////////////////
@@ -361,30 +477,42 @@ extern "C" int sigaction(int sig, const struct sigaction *__restrict act,
 	if (sig = SIGSEGV)
 	{
 		fprintf(stderr, "sigaction() called\n");
-		old_segfault_sigaction = act->sa_sigaction;
+		old_segfault_sigaction = (ptrsignalhandler) act->sa_sigaction;
 		return 0;
 	}
 	return old_sigaction(sig, act, oact);
 }
 
-void InitSignal()
+ptrsignalhandler SetSignal(int sig, ptrsignalhandler handler)
 {
 	struct sigaction sa;
 	struct sigaction oldsa;
 	memset(&sa, 0, sizeof(struct sigaction));
 	memset(&oldsa, 0, sizeof(struct sigaction));
 	sigemptyset(&sa.sa_mask);
-	sa.sa_sigaction = segfault_sigaction;
+	sa.sa_sigaction = handler;
 	sa.sa_flags = SA_SIGINFO;
-	
-	sigaction_bypass(SIGSEGV, &sa, &oldsa);
-	old_segfault_sigaction = oldsa.sa_sigaction;
 
-	flag_bypass_mmap = true;
-	LockerThread = std::move(std::thread(LockerThreadProc));
-	LockerThread.detach();
-	flag_bypass_mmap = false;
-	
+	if (sigaction_bypass(sig, &sa, &oldsa))
+		perror("sigaction");
+	return oldsa.sa_sigaction;
+}
+
+void InitSignal()
+{
+
+	old_segfault_sigaction = SetSignal(SIGSEGV, segfault_sigaction);
+	if (!isCaptureAll)
+	{
+		flag_bypass_mmap = true;
+		LockerThread = std::move(std::thread(LockerThreadProc));
+		LockerThread.detach();
+		flag_bypass_mmap = false;
+	}
+	else
+	{
+		old_trap_sigaction = SetSignal(SIGTRAP, trap_sigaction);
+	}
 }
 
 
@@ -395,6 +523,11 @@ void OnInit()
 {
 	if (init_called)
 		return;
+	char* pEnv = getenv("QUAIL_CAPTURE_ALL");
+	if (pEnv && pEnv[0] == '1' && pEnv[1] == 0)
+	{
+		isCaptureAll = true;
+	}
 	//fprintf(stderr, "DLL load\n");
 	void* pread = dlsym(RTLD_NEXT, "read");
 	if (!pread)
@@ -407,7 +540,13 @@ void OnInit()
 		fprintf(stderr, "Hook error\n");
 		exit(1);
 	}
-	
+	if (HookIt(dlsym(RTLD_NEXT, "__lxstat"), (void**)&oldlxstat, (void*)mylxstat) != 0)
+	{
+		fprintf(stderr, "Hook error\n");
+		exit(1);
+	}
+	//sleep(20);
+	InitInterpreter();
 	InitSignal();
 	init_called = true;
 }
@@ -416,29 +555,9 @@ void OnExit()
 {
 	page_map.foreach([](const uintptr_t& page, const PPageInfo& info) {
 		//std::cout << "Page " << page << " Count = " << (unsigned)info->count << std::endl;
-		if(info->count>3)
+		if(info->count>10)
 			fprintf(stderr, "Page %p Count = %d\n", (void*)page, (unsigned)info->count);
-		return true;
+		return false;
 	});
+	//page_map.stat();
 }
-
-
-
-
-
-
-/*
-void* mymmap(void *__addr, size_t __len, int __prot,
-	int __flags, int __fd, __off_t __offset)
-{
-	if (__flags & MAP_ANONYMOUS)
-	{
-		void* ret = mmap(__addr, __len, __prot & ~(PROT_WRITE), __flags, __fd, __offset);
-		for (unsigned i = 0; i < divide_and_ceil(__len, PageSize); i++)
-		{
-			page_map.insert(((uintptr_t)ret + i * PageSize), new (malloc_bypass(sizeof(PageInfo))) PageInfo(__prot)); // fix-me : may cause recursive calls to mmap
-		}
-		return ret;
-	}
-	return mmap(__addr, __len, __prot, __flags, __fd, __offset);
-}*/

@@ -29,6 +29,8 @@ typedef void* (*ptrmalloc)(size_t __size);
 static ptrmalloc old_malloc = NULL;
 static thread_local bool MallocBypass = false;
 thread_local bool MallocTouch = false;
+bool isCaptureAll = false;
+
 
 void *malloc_bypass(size_t size)
 {
@@ -76,10 +78,13 @@ auto mymalloc = [](size_t size)->void* {
 		{
 			FreePageInfo(pInfo);
 		}
-	}
-	if (MallocTouch)
-	{
-		TouchRange(ret, size);
+		else if (isCaptureAll)
+		{
+			//if(i >>32  ==0)
+			//	fprintf(stderr, "mprotect %p\n", (void*)i);
+			mprotect((void*)i, PageSize, PROT_READ);
+		}
+
 	}
 	return ret;
 };
@@ -145,15 +150,23 @@ extern "C"
 			return old_mmap(__addr, __len, __prot, __flags & ~(MAP_BYPASS), __fd, __offset);
 		}
 		void* ret;
-		if (__flags & MAP_ANONYMOUS)
+		if (__flags & (MAP_ANONYMOUS | MAP_PRIVATE))
 		{
-			ret = old_mmap(__addr, __len, __prot, __flags, __fd, __offset);
+			int myprot = __prot;
+			if (isCaptureAll)
+				myprot = myprot & ~(PROT_WRITE);
+			ret = old_mmap(__addr, __len, myprot, __flags, __fd, __offset);
 			for (unsigned i = 0; i < divide_and_ceil(__len, PageSize); i++)
 			{
 				PageInfo* pInfo = new (AllocPageInfo()) PageInfo(__prot, true);
 				if (page_map.insert_if_absent((uintptr_t)ret + i * PageSize, pInfo) != nullptr)
 				{
 					FreePageInfo(pInfo);
+				}
+				else
+				{
+					if (((uintptr_t)ret + i * PageSize) >> 32 == 0)
+						fprintf(stderr, "mprotect single %016x", (uintptr_t)ret + i * PageSize);
 				}
 			}
 		}

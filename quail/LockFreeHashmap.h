@@ -2,6 +2,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string.h>
+//#include <stdio.h>
 namespace quail
 {
 	struct Alloactor
@@ -113,12 +114,27 @@ namespace quail
 				{
 					if (!f(next->key, next->value))
 					{
-						break;
+						return;
 					}
 					next = next->next;
 				}
 			}
 		}
+
+/*		void stat()
+		{
+			for (int i = 0; i < BucketSize; i++)
+			{
+				int cnt = 0;
+				Node* next = bucket[i];
+				while (next)
+				{
+					cnt++;
+					next = next->next;
+				}
+				if(cnt>=3)printf("Bucket %d - %d\n", i, cnt);
+			}
+		}*/
 
 		LockFreeHashmap()
 		{

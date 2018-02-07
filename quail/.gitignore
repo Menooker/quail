@@ -1,3 +1,6 @@
 *.o
 bin/*
 third_party/*
+test/*
+*.so
+*.s
