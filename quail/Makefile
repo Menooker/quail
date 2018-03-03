@@ -1,4 +1,4 @@
-.PHONY: test
+.PHONY: test directories
 
 PWD_DIR=$(shell pwd)
 CXX ?= g++
@@ -13,12 +13,10 @@ user_hooks.o: user_hooks.cpp
 	$(CXX) -c $^ -fPIC $(CXXFLAGS) 
 soft_dirty.o: soft_dirty.cpp
 	$(CXX) -c $^ -fPIC $(CXXFLAGS) 
-inline_hook.o: inline_hook.cpp
-	$(CXX) -c $^ -fPIC $(CXXFLAGS)	
 Interpreter.o: Interpreter.cpp
 	$(CXX) -c $^ -fPIC $(CXXFLAGS)	
-lib : quail.o user_hooks.o inline_hook.o Interpreter.o
-	$(CXX) -fPIC $(CXXFLAGS) -shared -o bin/libquail.so  -Wl,--start-group $^ $(LIBS) -lZydis -ldl -Wl,--end-group 
+lib : quail.o user_hooks.o  Interpreter.o
+	$(CXX) -fPIC $(CXXFLAGS) -shared -o bin/libquail.so  -Wl,--start-group $^ $(LIBS) -lZydis -lPFishHook -ldl -Wl,--end-group 
 lib2 : user_hooks.o soft_dirty.o
 	$(CXX) -fPIC $(CXXFLAGS) -shared -o bin/libquail2.so  -Wl,--start-group $^ $(LIBS) -ldl -Wl,--end-group 
 lib3 : read.o
@@ -28,3 +26,10 @@ clean:
 	rm -f bin/qtest
 remake: clean qtest
 
+inline_hook: directories
+	make -C $(PWD_DIR)/third_party/PFishHook LIBPATH=$(PWD_DIR)/third_party/bin INCLUDE=$(PWD_DIR)/third_party/include OUT_DIR=$(PWD_DIR)/third_party/bin OUT_INC_DIR=$(PWD_DIR)/third_party/include
+
+directories:
+	mkdir -p $(PWD_DIR)/third_party
+	mkdir -p $(PWD_DIR)/third_party/bin
+	mkdir -p $(PWD_DIR)/third_party/include
