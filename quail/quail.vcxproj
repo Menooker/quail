@@ -64,7 +64,6 @@
     <IncludePath>$(SolutionDir)/quail/third_party/include;$(SolutionDir)/../linux_include;$(SolutionDir)/../linux_include/x86_64-linux-gnu;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <ItemGroup>
-    <ClCompile Include="inline_hook.cpp" />
     <ClCompile Include="Interpreter.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="quail.cpp" />
@@ -72,6 +71,7 @@
     <ClCompile Include="read.cpp" />
     <ClCompile Include="readtest.cpp" />
     <ClCompile Include="soft_dirty.cpp" />
+    <ClCompile Include="third_party\PFishHook\inline_hook.cpp" />
     <ClCompile Include="user_hooks.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -81,6 +81,7 @@
     <ClInclude Include="LockFreeHashmap.h" />
     <ClInclude Include="ObjectPool.h" />
     <ClInclude Include="PageInfo.h" />
+    <ClInclude Include="third_party\PFishHook\PFishHook.h" />
     <ClInclude Include="util.h" />
   </ItemGroup>
   <ItemDefinitionGroup />

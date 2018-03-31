@@ -19,6 +19,7 @@
 #include <limits.h>
 #include "PFishHook.h"
 #include <ucontext.h>
+#include <pthread.h>
 
 static std::thread LockerThread;
 bool init_called = false;
@@ -29,6 +30,8 @@ extern quail::LockFreeHashmap<4096, uintptr_t, PageInfo*, BypassAlloactor> page_
 extern thread_local bool flag_bypass_mmap;
 
 extern bool isCaptureAll;
+static FILE* outfile=nullptr;
+static int sample_interval = 100;
 
 #ifdef __GNUC__
 #define  likely(x)        __builtin_expect(!!(x), 1) 
@@ -315,7 +318,7 @@ typedef ssize_t(*ptrread)(int fd, void *buf, size_t nbytes);
 ptrread oldread;
 extern "C" ssize_t myread(int fd, void *buf, size_t nbytes)
 {
-	fprintf(stderr, "[read] bytes %zu buf %p\n", nbytes,buf);
+	//fprintf(stderr, "[read] bytes %zu buf %p\n", nbytes,buf);
 	if (isCaptureAll)
 		MProtectRange(buf, nbytes,true);
 	else
@@ -326,6 +329,30 @@ extern "C" ssize_t myread(int fd, void *buf, size_t nbytes)
 	//fprintf(stderr, "[read] ret%d\n", ret);
 	return ret;
 }
+
+typedef int(*ptrpthread_once)(pthread_once_t *__once_control,
+	void(*__init_routine) (void));
+ptrpthread_once oldpthread_once;
+int mypthread_once(pthread_once_t *__once_control,
+	void(*__init_routine) (void))
+{
+	if(!init_called)
+		return oldpthread_once(__once_control, __init_routine);
+
+	auto itm = page_map.find((uintptr_t)AlignToPage(__once_control));
+	if (itm)
+	{
+		fprintf(stderr, "pthread in heap %p\n", __once_control);
+		itm->unprotected = false;
+		mprotect(AlignToPage(__once_control), PageSize, itm->prot);
+	}
+	//MProtectRange(__once_control, sizeof(pthread_once_t), true);
+
+	int ret = oldpthread_once(__once_control, __init_routine);
+	return ret;
+}
+
+
 
 def_name(__xstat)
 auto my_stat = [](int ver, const char *__restrict file, struct stat *__restrict buf)->int {
@@ -372,6 +399,11 @@ extern "C" int __fxstat(int ver, int fd, struct stat *buf)
 	return CallHooked(Name___fxstat(), my_fstat, int(), ver, fd, buf);
 }
 
+
+/*extern "C" unsigned int alarm(unsigned int time)
+{
+	return time;
+}*/
 ///////////////////
 
 
@@ -393,7 +425,7 @@ static void LockerThreadProc()
 			}
 			return true;
 		});
-		std::this_thread::sleep_for(std::chrono::milliseconds(150));
+		std::this_thread::sleep_for(std::chrono::milliseconds(sample_interval));
 	}
 }
 
@@ -523,10 +555,31 @@ void OnInit()
 {
 	if (init_called)
 		return;
+	if (PageSize == 0)
+		PageSize = sysconf(_SC_PAGESIZE);
 	char* pEnv = getenv("QUAIL_CAPTURE_ALL");
 	if (pEnv && pEnv[0] == '1' && pEnv[1] == 0)
 	{
 		isCaptureAll = true;
+	}
+	pEnv = getenv("QUAIL_OUTPUT");
+	if (pEnv && pEnv[0] == 0 || !pEnv)
+	{
+		outfile=stderr;
+	}
+	else
+	{
+		outfile = fopen(pEnv, "a");
+	}
+
+	pEnv = getenv("QUAIL_INTERVAL");
+	if (pEnv && pEnv[0] == 0 || !pEnv)
+	{
+		sample_interval = 100;
+	}
+	else
+	{
+		sample_interval = atoi(pEnv);
 	}
 	//fprintf(stderr, "DLL load\n");
 	void* pread = dlsym(RTLD_NEXT, "read");
@@ -535,14 +588,20 @@ void OnInit()
 		fprintf(stderr, "read not found\n");
 		exit(1);
 	}
-	if (HookIt(pread, (void**)&oldread, (void*)myread) != 0)
+	HookStatus ret;
+	if ((ret=HookIt(pread, (void**)&oldread, (void*)myread)) != 0)
 	{
-		fprintf(stderr, "Hook error\n");
+		fprintf(stderr, "Hook error %d\n",ret);
 		exit(1);
 	}
-	if (HookIt(dlsym(RTLD_NEXT, "__lxstat"), (void**)&oldlxstat, (void*)mylxstat) != 0)
+	if ((ret=HookIt(dlsym(RTLD_NEXT, "__lxstat"), (void**)&oldlxstat, (void*)mylxstat)) != 0)
 	{
-		fprintf(stderr, "Hook error\n");
+		fprintf(stderr, "Hook error %d\n",ret);
+		exit(1);
+	}
+	if ((ret = HookIt(dlsym(RTLD_NEXT, "pthread_once"), (void**)&oldpthread_once, (void*)mypthread_once)) != 0)
+	{
+		fprintf(stderr, "Hook error %d\n", ret);
 		exit(1);
 	}
 	//sleep(20);
@@ -555,9 +614,9 @@ void OnExit()
 {
 	page_map.foreach([](const uintptr_t& page, const PPageInfo& info) {
 		//std::cout << "Page " << page << " Count = " << (unsigned)info->count << std::endl;
-		if(info->count>10)
-			fprintf(stderr, "Page %p Count = %d\n", (void*)page, (unsigned)info->count);
-		return false;
+		//if(info->count>0)
+		fprintf(outfile, "Page %p Count = %d\n", (void*)page, (unsigned)info->count);
+		return true;
 	});
 	//page_map.stat();
 }

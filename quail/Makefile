@@ -19,8 +19,7 @@ lib : quail.o user_hooks.o  Interpreter.o
 	$(CXX) -fPIC $(CXXFLAGS) -shared -o bin/libquail.so  -Wl,--start-group $^ $(LIBS) -lZydis -lPFishHook -ldl -Wl,--end-group 
 lib2 : user_hooks.o soft_dirty.o
 	$(CXX) -fPIC $(CXXFLAGS) -shared -o bin/libquail2.so  -Wl,--start-group $^ $(LIBS) -ldl -Wl,--end-group 
-lib3 : read.o
-	$(CXX) -fPIC $(CXXFLAGS) -shared -o bin/libquail3.so  -Wl,--start-group $^ $(LIBS) -ldl -Wl,--end-group 
+
 clean:
 	rm -f *.o
 	rm -f bin/qtest

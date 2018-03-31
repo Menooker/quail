@@ -150,7 +150,7 @@ extern "C"
 			return old_mmap(__addr, __len, __prot, __flags & ~(MAP_BYPASS), __fd, __offset);
 		}
 		void* ret;
-		if (__flags & (MAP_ANONYMOUS | MAP_PRIVATE))
+		if ( (__flags & (MAP_ANONYMOUS | MAP_PRIVATE) ) && !(__flags & MAP_STACK))
 		{
 			int myprot = __prot;
 			if (isCaptureAll)

@@ -32,7 +32,8 @@ static std::thread WatcherThread;
 extern quail::LockFreeHashmap<4096, uintptr_t, PageInfo*, BypassAlloactor> page_map;
 char mappath[100];
 extern thread_local bool flag_bypass_mmap ;
-
+static FILE* outfile = nullptr;
+static int sample_interval = 100;
 
 int IsPageModified(uintptr_t vir,bool& out)
 {
@@ -82,7 +83,7 @@ void WatcherThreadProc()
 		ClearDirtyBit();
 		//sleep for some time or let the main thread wake me up
 		//time_lock.try_lock_for(std::chrono::milliseconds(150));
-		std::this_thread::sleep_for(std::chrono::milliseconds(150));
+		std::this_thread::sleep_for(std::chrono::milliseconds(sample_interval));
 		if (thread_do_exit)
 			break;
 		page_map.foreach([](const uintptr_t& page, const PPageInfo& info) {
@@ -103,6 +104,28 @@ void OnInit()
 {
 	if (init_called)
 		return;
+
+	char* pEnv = getenv("QUAIL_CAPTURE_ALL");
+	pEnv = getenv("QUAIL_OUTPUT");
+	if (pEnv && pEnv[0] == 0 || !pEnv)
+	{
+		outfile = stderr;
+	}
+	else
+	{
+		outfile = fopen(pEnv, "a");
+	}
+
+	pEnv = getenv("QUAIL_INTERVAL");
+	if (pEnv && pEnv[0] == 0 || !pEnv)
+	{
+		sample_interval = 100;
+	}
+	else
+	{
+		sample_interval = atoi(pEnv);
+	}
+
 	flag_bypass_mmap = true;
 	snprintf(mappath, sizeof(mappath), "/proc/%d/clear_refs", getpid());
 	//fprintf(stderr, "DLL load\n");
@@ -128,8 +151,8 @@ void OnExit()
 	close(pagemapfd);
 	page_map.foreach([](const uintptr_t& page, const PPageInfo& info) {
 		//std::cout << "Page " << page << " Count = " << (unsigned)info->count << std::endl;
-		if (info->count>2)
-			fprintf(stderr, "Page %p Count = %d\n", (void*)page, (unsigned)info->count);
+		//if (info->count>0)
+		fprintf(outfile, "Page %p Count = %d\n", (void*)page, (unsigned)info->count);
 		return true;
 	});
 }
