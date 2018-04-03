@@ -43,10 +43,12 @@ static int sample_interval = 100;
 
 #define EFLAG_TF_MASK ((uint64_t)1<<8)
 
-thread_local void* SingleStepPage = nullptr;
-thread_local int SingleStepProt = 0;
-thread_local int SingleStepSize = 0;
-thread_local void* LastFault = 0;
+void* SingleStepPage = nullptr;
+int SingleStepProt = 0;
+int SingleStepSize = 0;
+void* LastFault = 0;
+
+std::mutex GlobalCaptureLock;
 
 typedef void(*ptrsignalhandler)(int signal, siginfo_t *si, void *arg);
 ptrsignalhandler old_segfault_sigaction;
@@ -59,7 +61,21 @@ extern void PrintInstruction(uint8_t * instr);
 
 int sigaction_bypass(int sig, const struct sigaction *__restrict act,
 	struct sigaction *__restrict oact);
+struct sigaction SEGVData= { 0 };
+struct sigaction TRAPData = { 0 };
 
+static void MRestoreRange(void* ptr, size_t n)
+{
+	char* start = (char*)AlignToPage(ptr);
+
+	for (char* i = start; i <= (char*)ptr + n - 1; i += PageSize)
+	{
+		auto itm = page_map.find((uintptr_t)i);
+		if (!itm)
+			continue;
+		itm->unprotected = true;
+	}
+}
 
 static void MProtectRange(void* ptr, size_t n, bool writable)
 {
@@ -80,8 +96,9 @@ static void MProtectRange(void* ptr, size_t n, bool writable)
 		{
 			goto TOUCH_ALL;
 		}
+		itm->unprotected = !writable;
 		cnt++;
-		itm->count++;
+		//itm->count++;
 	}
 	if (prot != -1)
 	{
@@ -101,7 +118,7 @@ TOUCH_ALL:
 		auto itm = page_map.find((uintptr_t)i);
 		if (itm)
 		{
-			itm->count++; //fix-me : use the correct count
+			//itm->count++; //fix-me : use the correct count
 			//if (!writable && (uintptr_t)i >> 32 == 0)
 			//	fprintf(stderr, "mprotect single %016x", i);
 			mprotect(i, PageSize, itm->prot & mask);
@@ -121,7 +138,7 @@ void segfault_sigaction(int sig, siginfo_t *si, void *arg)
 	{
 		fprintf(stderr, "call old seg %p, page %p , itm=%p\n", 
 			old_segfault_sigaction, si->si_addr,itm);
-		sleep(-1);
+		//sleep(-1);
 		if ((uintptr_t)old_segfault_sigaction == 0)
 		{
 			//printf("call default handler\n");
@@ -145,7 +162,7 @@ void segfault_sigaction(int sig, siginfo_t *si, void *arg)
 
 	if (isCaptureAll)
 	{
-
+		GlobalCaptureLock.lock();
 		//fprintf(stderr, "Caught segfault at address %p\n", si->si_addr);
 		ucontext* context = (ucontext*)arg;
 		SingleStepPage = AlignToPage(si->si_addr);
@@ -232,13 +249,14 @@ void segfault_sigaction(int sig, siginfo_t *si, void *arg)
 			perror("Signal: Set protect error: ");
 		}
 	}
-	itm->count++;
+	uint64_t newcnt=itm->count++;
 	itm->unprotected = true;
 	//printf("Found item\n");
 }
 void trap_sigaction(int sig, siginfo_t *si, void *arg)
 {
 	ucontext* context = (ucontext*)arg;
+	//fprintf(stderr, "trap fault %p\n", si->si_addr);
 	if (si->si_addr == (char*)segfault_sigaction + 2)
 	{
 		fprintf(stderr, "Double fault\n");
@@ -268,6 +286,7 @@ void trap_sigaction(int sig, siginfo_t *si, void *arg)
 
 		SingleStepPage = nullptr;
 		context->uc_mcontext.gregs[REG_EFL] &= ~EFLAG_TF_MASK;
+		GlobalCaptureLock.unlock();
 	}
 	else
 	{
@@ -316,16 +335,19 @@ extern "C" __pid_t waitpid(__pid_t __pid, int *__stat_loc, int __options)
 
 typedef ssize_t(*ptrread)(int fd, void *buf, size_t nbytes);
 ptrread oldread;
+int cnt = 0;
 extern "C" ssize_t myread(int fd, void *buf, size_t nbytes)
 {
-	//fprintf(stderr, "[read] bytes %zu buf %p\n", nbytes,buf);
-	if (isCaptureAll)
-		MProtectRange(buf, nbytes,true);
-	else
-		TouchRange(buf, nbytes);
+	//fprintf(stderr, "[read] bytes %zu buf %p %d\n", nbytes,buf,cnt++);
+	//if (isCaptureAll)
+	MProtectRange(buf, nbytes,true);
+	//else
+	//	TouchRange(buf, nbytes);
 	ssize_t ret = oldread(fd, buf, nbytes);
 	if (isCaptureAll)
 		MProtectRange(buf, nbytes, false);
+	else
+		MRestoreRange(buf, nbytes);
 	//fprintf(stderr, "[read] ret%d\n", ret);
 	return ret;
 }
@@ -357,13 +379,15 @@ int mypthread_once(pthread_once_t *__once_control,
 def_name(__xstat)
 auto my_stat = [](int ver, const char *__restrict file, struct stat *__restrict buf)->int {
 	fprintf(stderr, "stat %s\n", file);
-	if (isCaptureAll)
+	//if (isCaptureAll)
 		MProtectRange(buf, sizeof(struct stat), true);
-	else
-		TouchRange(buf, sizeof(struct stat));
+	//else
+	//	TouchRange(buf, sizeof(struct stat));
 	auto ret = CallOld(Name___xstat(), int(0), ver, file, buf);
 	if (isCaptureAll)
 		MProtectRange(buf, sizeof(struct stat), false);
+	else
+		MRestoreRange(buf, sizeof(struct stat));
 	return ret;
 };
 extern "C" int __xstat(int ver, const char *__restrict file, struct stat *__restrict buf) {
@@ -373,25 +397,29 @@ extern "C" int __xstat(int ver, const char *__restrict file, struct stat *__rest
 typedef int(*ptrlxstat)(int ver, const char *__restrict file, struct stat *__restrict buf);
 ptrlxstat oldlxstat;
 extern "C" int mylxstat(int ver, const char *__restrict file, struct stat *__restrict buf) {
-	if (isCaptureAll)
+	//if (isCaptureAll)
 		MProtectRange(buf, sizeof(struct stat), true);
-	else
-		TouchRange(buf, sizeof(struct stat));
+	//else
+	//	TouchRange(buf, sizeof(struct stat));
 	auto ret = oldlxstat(ver, file, buf);
 	if (isCaptureAll)
 		MProtectRange(buf, sizeof(struct stat), false);
+	else
+		MRestoreRange(buf, sizeof(struct stat));
 	return ret;
 }
 
 def_name(__fxstat);
 auto my_fstat = [](int ver, int fd, struct stat *buf)->int {
-	if (isCaptureAll)
+	//if (isCaptureAll)
 		MProtectRange(buf, sizeof(struct stat), true);
-	else
-		TouchRange(buf, sizeof(struct stat));
+	//else
+	//	TouchRange(buf, sizeof(struct stat));
 	auto ret = CallOld(Name___fxstat(), int(0), ver, fd, buf);
 	if (isCaptureAll)
 		MProtectRange(buf, sizeof(struct stat), false);
+	else
+		MRestoreRange(buf, sizeof(struct stat));
 	return ret;
 };
 extern "C" int __fxstat(int ver, int fd, struct stat *buf)
@@ -508,32 +536,43 @@ extern "C" int sigaction(int sig, const struct sigaction *__restrict act,
 
 	if (sig = SIGSEGV)
 	{
-		fprintf(stderr, "sigaction() called\n");
-		old_segfault_sigaction = (ptrsignalhandler) act->sa_sigaction;
+		fprintf(stderr, "sigaction(SIGSEGV) called\n");
+		if(act)
+			old_segfault_sigaction = (ptrsignalhandler) act->sa_sigaction;
+		if (oact)
+			*oact = SEGVData;
+		return 0;
+	}
+	if (sig = SIGTRAP)
+	{
+		fprintf(stderr, "sigaction(SIGTRAP) called\n");
+		if (act)
+			old_trap_sigaction = (ptrsignalhandler)act->sa_sigaction;
+		if (oact)
+			*oact = TRAPData;
 		return 0;
 	}
 	return old_sigaction(sig, act, oact);
 }
 
-ptrsignalhandler SetSignal(int sig, ptrsignalhandler handler)
+ptrsignalhandler SetSignal(int sig, ptrsignalhandler handler,struct sigaction* oldsa)
 {
 	struct sigaction sa;
-	struct sigaction oldsa;
 	memset(&sa, 0, sizeof(struct sigaction));
-	memset(&oldsa, 0, sizeof(struct sigaction));
+	memset(oldsa, 0, sizeof(struct sigaction));
 	sigemptyset(&sa.sa_mask);
 	sa.sa_sigaction = handler;
 	sa.sa_flags = SA_SIGINFO;
 
-	if (sigaction_bypass(sig, &sa, &oldsa))
+	if (sigaction_bypass(sig, &sa, oldsa))
 		perror("sigaction");
-	return oldsa.sa_sigaction;
+	return oldsa->sa_sigaction;
 }
 
 void InitSignal()
 {
 
-	old_segfault_sigaction = SetSignal(SIGSEGV, segfault_sigaction);
+	old_segfault_sigaction = SetSignal(SIGSEGV, segfault_sigaction,&SEGVData);
 	if (!isCaptureAll)
 	{
 		flag_bypass_mmap = true;
@@ -543,7 +582,7 @@ void InitSignal()
 	}
 	else
 	{
-		old_trap_sigaction = SetSignal(SIGTRAP, trap_sigaction);
+		old_trap_sigaction = SetSignal(SIGTRAP, trap_sigaction,&TRAPData);
 	}
 }
 
