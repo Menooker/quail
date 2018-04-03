@@ -334,7 +334,9 @@ extern "C" __pid_t waitpid(__pid_t __pid, int *__stat_loc, int __options)
 }
 
 typedef ssize_t(*ptrread)(int fd, void *buf, size_t nbytes);
+typedef ssize_t(*ptrfread)(FILE* fd, void *buf, size_t nbytes);
 ptrread oldread;
+ptrfread old_IO_file_read;
 int cnt = 0;
 extern "C" ssize_t myread(int fd, void *buf, size_t nbytes)
 {
@@ -349,6 +351,21 @@ extern "C" ssize_t myread(int fd, void *buf, size_t nbytes)
 	else
 		MRestoreRange(buf, nbytes);
 	//fprintf(stderr, "[read] ret%d\n", ret);
+	return ret;
+}
+
+extern "C" ssize_t myfileread(FILE* fp, void *buf, size_t nbytes)
+{
+	fprintf(stderr, "[fileread] bytes %zu buf %p %d\n", nbytes,buf,cnt++);
+	//if (isCaptureAll)
+	MProtectRange(buf, nbytes, true);
+	//else
+	//	TouchRange(buf, nbytes);
+	ssize_t ret = old_IO_file_read(fp, buf, nbytes);
+	if (isCaptureAll)
+		MProtectRange(buf, nbytes, false);
+	else
+		MRestoreRange(buf, nbytes);
 	return ret;
 }
 
@@ -643,6 +660,15 @@ void OnInit()
 		fprintf(stderr, "Hook error %d\n", ret);
 		exit(1);
 	}
+	/*void* p_IO_file_read = dlsym(RTLD_NEXT, "_IO_file_read");
+	if (p_IO_file_read)
+	{
+		if ((ret = HookIt(p_IO_file_read, (void**)&old_IO_file_read, (void*)myfileread)) != 0)
+		{
+			fprintf(stderr, "Hook error %d\n", ret);
+			exit(1);
+		}
+	}*/
 	//sleep(20);
 	InitInterpreter();
 	InitSignal();
