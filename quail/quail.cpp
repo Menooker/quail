@@ -49,6 +49,7 @@ int SingleStepSize = 0;
 void* LastFault = 0;
 
 std::mutex GlobalCaptureLock;
+thread_local bool local_locked = false;
 
 typedef void(*ptrsignalhandler)(int signal, siginfo_t *si, void *arg);
 ptrsignalhandler old_segfault_sigaction;
@@ -162,7 +163,11 @@ void segfault_sigaction(int sig, siginfo_t *si, void *arg)
 
 	if (isCaptureAll)
 	{
-		GlobalCaptureLock.lock();
+		if (!local_locked)
+		{
+			GlobalCaptureLock.lock(); 
+			local_locked = true;
+		}
 		//fprintf(stderr, "Caught segfault at address %p\n", si->si_addr);
 		ucontext* context = (ucontext*)arg;
 		SingleStepPage = AlignToPage(si->si_addr);
@@ -286,7 +291,12 @@ void trap_sigaction(int sig, siginfo_t *si, void *arg)
 
 		SingleStepPage = nullptr;
 		context->uc_mcontext.gregs[REG_EFL] &= ~EFLAG_TF_MASK;
-		GlobalCaptureLock.unlock();
+		if (local_locked)
+		{
+			local_locked = false;
+			GlobalCaptureLock.unlock();
+		}
+
 	}
 	else
 	{
@@ -356,7 +366,7 @@ extern "C" ssize_t myread(int fd, void *buf, size_t nbytes)
 
 extern "C" ssize_t myfileread(FILE* fp, void *buf, size_t nbytes)
 {
-	fprintf(stderr, "[fileread] bytes %zu buf %p %d\n", nbytes,buf,cnt++);
+	//fprintf(stderr, "[fileread] bytes %zu buf %p %d\n", nbytes,buf,cnt++);
 	//if (isCaptureAll)
 	MProtectRange(buf, nbytes, true);
 	//else
@@ -660,7 +670,7 @@ void OnInit()
 		fprintf(stderr, "Hook error %d\n", ret);
 		exit(1);
 	}
-	/*void* p_IO_file_read = dlsym(RTLD_NEXT, "_IO_file_read");
+	void* p_IO_file_read = dlsym(RTLD_NEXT, "_IO_file_read");
 	if (p_IO_file_read)
 	{
 		if ((ret = HookIt(p_IO_file_read, (void**)&old_IO_file_read, (void*)myfileread)) != 0)
@@ -668,7 +678,7 @@ void OnInit()
 			fprintf(stderr, "Hook error %d\n", ret);
 			exit(1);
 		}
-	}*/
+	}
 	//sleep(20);
 	InitInterpreter();
 	InitSignal();
