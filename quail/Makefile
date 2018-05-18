@@ -29,6 +29,7 @@ inline_hook: directories
 	make -C $(PWD_DIR)/third_party/PFishHook LIBPATH=$(PWD_DIR)/third_party/bin INCLUDE=$(PWD_DIR)/third_party/include OUT_DIR=$(PWD_DIR)/third_party/bin OUT_INC_DIR=$(PWD_DIR)/third_party/include
 
 directories:
+	mkdir -p $(PWD_DIR)/bin
 	mkdir -p $(PWD_DIR)/third_party
 	mkdir -p $(PWD_DIR)/third_party/bin
 	mkdir -p $(PWD_DIR)/third_party/include
