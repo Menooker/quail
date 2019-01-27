@@ -4,3 +4,4 @@ third_party/*
 test/*
 *.so
 *.s
+out/*

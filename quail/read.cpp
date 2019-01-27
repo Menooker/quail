@@ -12,7 +12,7 @@
 	return CallOld(Name_read(), ssize_t(), fd, buf, nbytes);
 };
 (=*/
-extern "C" ssize_t read(int fd, void *buf, size_t nbytes)
+extern "C" ssize_t read2(int fd, void *buf, size_t nbytes)
 {
 	fprintf(stderr, "read\n");
 	return 0;

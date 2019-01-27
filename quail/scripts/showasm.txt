@@ -1,0 +1,1 @@
+echo 'asm("jne 0x12312313; jmp %rax");' > test.c; gcc -c test.c ;objdump -d test.o

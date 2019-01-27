@@ -1,0 +1,1 @@
+/usr/lib/gcc/x86_64-linux-gnu/5/cc1plus -quiet -imultiarch x86_64-linux-gnu -D_GNU_SOURCE quail.cpp -quiet -dumpbase quail.cpp -mtune=generic -march=x86-64 -auxbase-strip quail_test.o -g -O0 -std=c++11

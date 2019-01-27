@@ -1,7 +1,7 @@
 #ulimit -S unlimited
 export LD_PRELOAD=$(pwd)/bin/libquail.so
 echo $LD_PRELOAD
-export QUAIL_OUTPUT=./out/gcc_sample.txt
+export QUAIL_OUTPUT=/dev/null
 #export QUAIL_CAPTURE_ALL=1
 #strace -f -o strace2.txt g++ -c quail.cpp  -std=c++11 -g -O0 -o quail_test.o
 #time g++ test/hello.cpp -std=c++11 -g -O0 -o test/hello

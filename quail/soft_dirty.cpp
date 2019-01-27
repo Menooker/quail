@@ -49,7 +49,7 @@ int IsPageModified(uintptr_t vir,bool& out)
 	}
 	if (sizeof(uint64_t) != read(pagemapfd, &pfn_item, sizeof(uint64_t)))
 	{
-		printf("read %s failed", page_map_file);
+		perror("read file failed");
 		return -1;
 	}
 	out = pfn_item & DIRTY_BIT_MASK;
