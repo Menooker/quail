@@ -72,8 +72,10 @@
     <ClCompile Include="soft_dirty.cpp" />
     <ClCompile Include="third_party\PFishHook\inline_hook.cpp" />
     <ClCompile Include="user_hooks.cpp" />
+    <ClCompile Include="WearLeveling.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="BitSet.h" />
     <ClInclude Include="BypassAlloactor.h" />
     <ClInclude Include="bypass_mmap.h" />
     <ClInclude Include="HookFunction.h" />
