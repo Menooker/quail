@@ -70,9 +70,11 @@
     <ClCompile Include="quail_reg.cpp" />
     <ClCompile Include="read.cpp" />
     <ClCompile Include="soft_dirty.cpp" />
+    <ClCompile Include="tests\wear-leveling.cpp" />
     <ClCompile Include="third_party\PFishHook\inline_hook.cpp" />
     <ClCompile Include="user_hooks.cpp" />
     <ClCompile Include="WearLeveling.cpp" />
+    <ClCompile Include="wear_leveling_test.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="BitSet.h" />

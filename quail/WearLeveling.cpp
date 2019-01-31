@@ -12,30 +12,38 @@
 #include <string.h>
 #include <vector>
 #include "util.h"
+#include "PageInfo.h"
+#include "LockFreeHashmap.h"
+#include "BypassAlloactor.h"
+#include <algorithm>
+#include <limits>
 
 
-#define COMPILE_WL_TESTS 1
+//#define COMPILE_WL_TESTS 1
 
-uint64_t NVM_SIZE_IN_BYTES = (32 * 1024);
+uint64_t NVM_SIZE_IN_BYTES = (32 * 1024 * 1024);
 
 extern size_t PageSize;
 
 constexpr int ALLOCATOR_BYTES_PER_BIT = 4096;
 constexpr uint64_t HEAP_CHECK_MAGIC = 0x12345678521641aa;
 constexpr int EXTRA_ALLOC_SIZE = sizeof(size_t)*2;
-
-
+extern quail::LockFreeHashmap<4096, uintptr_t, PageInfo*, BypassAlloactor> page_map;
 
 struct NVMManager
 {
+	
 	std::vector<char> allocator_bitmap;
+	std::atomic<uint64_t>* counters;
 	std::vector<char>::iterator itr;
 	int fd;
 	NVMManager& operator = (NVMManager&) = delete;
 	NVMManager& operator = (const NVMManager&) = delete;
-	NVMManager() :allocator_bitmap(NVM_SIZE_IN_BYTES / ALLOCATOR_BYTES_PER_BIT)
+	NVMManager() :allocator_bitmap(NVM_SIZE_IN_BYTES / ALLOCATOR_BYTES_PER_BIT, 0) 
 	{
-		int fd = open("mapfile.dat", O_RDWR, 0666);
+		counters = new std::atomic<uint64_t>[NVM_SIZE_IN_BYTES / ALLOCATOR_BYTES_PER_BIT];
+		memset(counters, 0, sizeof(std::atomic<uint64_t>) * NVM_SIZE_IN_BYTES / ALLOCATOR_BYTES_PER_BIT);
+		fd = open("mapfile.dat", O_RDWR, 0666);
 		if (fd == -1)
 		{
 			perror("oper file failed: ");
@@ -44,6 +52,10 @@ struct NVMManager
 		itr = allocator_bitmap.begin();
 	}
 
+	~NVMManager()
+	{
+		delete counters;
+	}
 #ifdef COMPILE_WL_TESTS
 	NVMManager(int) //only for testing
 	{
@@ -87,11 +99,26 @@ struct NVMManager
 		}
 		assert(itr->first <= ptr &&
 			((char*)itr->first + itr->second.len >= (char*)ptr + len));
+
 		//split the chunk into 3 (maybe 2) smaller chunks
 		//calculate the right & left hand side chunk
 		size_t lhs_len = (char*)ptr - (char*)itr->first;
 		size_t rhs_len = itr->second.len - lhs_len - len;
 		size_t rhs_offset = itr->second.offset + lhs_len + len;
+
+#ifndef COMPILE_WL_TESTS
+		//change the allocator bitmap
+		auto old_allocator_start_idx = (itr->second.offset + lhs_len) / ALLOCATOR_BYTES_PER_BIT;
+		auto new_allocator_start_idx = offset / ALLOCATOR_BYTES_PER_BIT;
+		for (int i = 0; i < len / ALLOCATOR_BYTES_PER_BIT; i++)
+		{
+			assert(allocator_bitmap[old_allocator_start_idx + i]);
+			assert(!allocator_bitmap[new_allocator_start_idx + i]);
+			allocator_bitmap[old_allocator_start_idx + i] = 0;
+			allocator_bitmap[new_allocator_start_idx + i] = 1;
+		}
+#endif
+
 		std::map<void*, MemChunkInfo>::iterator middle_itr;
 		if (itr->first != ptr)
 		{
@@ -111,6 +138,8 @@ struct NVMManager
 			ptr_to_file_offset.insert(std::make_pair(rhs_ptr, MemChunkInfo{ rhs_len,rhs_offset }));
 		}
 		MergeMemChunks(middle_itr);
+
+
 	}
 
 	void MergeMemChunks(std::map<void*, MemChunkInfo>::iterator itr)
@@ -149,12 +178,13 @@ struct NVMManager
 
 static NVMManager& GetManager()
 {
+	assert(need_wear_leveling);
 	static NVMManager mgr;
 	return mgr;
 }
 
 //swap one page (ptr) with a "page" in NVM with given offset
-extern "C" void QuailSwap(void* ptr, size_t offset)
+static void QuailSwap(void* ptr, size_t offset)
 {
 	auto& mgr = GetManager();
 	//first mmap the NVM to a temp location
@@ -173,10 +203,34 @@ extern "C" void QuailSwap(void* ptr, size_t offset)
 	mgr.SplitMemChunk(ptr, PageSize, offset);
 }
 
+//swap a page "ptr" with a cold page. 
+void QuailSwapPage(void* ptr, PageInfo* pinfo)
+{
+	auto& mgr = GetManager();
+	//find an un-allocated position with min write count
+	uint64_t min_cnt = std::numeric_limits<uint64_t>::max();
+	size_t idx = 0;
+	for (size_t i = 0; i < mgr.allocator_bitmap.size(); i++)
+	{
+		if (mgr.allocator_bitmap[i])
+			continue;
+		uint64_t v = mgr.counters[i];
+		if (v < min_cnt)
+		{
+			min_cnt = v;
+			idx = i;
+		}
+	}
+	assert(!mgr.allocator_bitmap[idx]);
+	QuailSwap(ptr, idx * ALLOCATOR_BYTES_PER_BIT);
+	assert(pinfo);
+	pinfo->_pcount = &mgr.counters[idx];
+	fprintf(stderr, "Swap the NVM of virtual address %p with NVM physical offset %llx\n", ptr, idx * ALLOCATOR_BYTES_PER_BIT);
+}
 
 extern "C" void QuailFree(void* ptr)
 {
-	uint64_t* header;
+	uint64_t* header=(uint64_t*)ptr;
 	assert(header[-1] == HEAP_CHECK_MAGIC);
 	uint64_t sz = header[-2];
 	char* real_ptr = (char*) (&header[-2]);
@@ -198,9 +252,14 @@ extern "C" void QuailFree(void* ptr)
 		itr = mgr.ptr_to_file_offset.erase(itr);
 		assert(itr->first == expect_next_ptr);
 	}
-	auto ret = munmap(ptr, sz);
+	auto ret = munmap(&header[-2], sz);
 	assert(ret != -1);
 }
+
+
+extern PageInfo* AllocPageInfo();
+extern bool isCaptureAll;
+extern void FreePageInfo(PageInfo* ptr);
 
 extern "C" void* QuailAlloc(size_t sz)
 {
@@ -244,11 +303,26 @@ extern "C" void* QuailAlloc(size_t sz)
 	//set the allocated memory bitmap to 1
 	std::fill(start_itr, itr, 1);
 	size_t offset = (start_itr - mgr.allocator_bitmap.begin()) * ALLOCATOR_BYTES_PER_BIT;
-	size_t* mmapret = (size_t*)mmap(nullptr, ALLOCATOR_BYTES_PER_BIT * find_num, PROT_WRITE | PROT_READ, MAP_SHARED, mgr.fd, offset);
+	size_t* mmapret = (size_t*)mmap(nullptr, ALLOCATOR_BYTES_PER_BIT * find_num, isCaptureAll? PROT_READ : (PROT_WRITE | PROT_READ), MAP_SHARED, mgr.fd, offset);
 	assert(mmapret != (size_t*)-1);
-	*mmapret = ALLOCATOR_BYTES_PER_BIT * find_num;
-	*(mmapret + 1) = HEAP_CHECK_MAGIC;
+	size_t alloc_sz = ALLOCATOR_BYTES_PER_BIT * find_num;
+
+	size_t counter_idx = start_itr - mgr.allocator_bitmap.begin();
+	for (unsigned i = 0; i < divide_and_ceil(alloc_sz, PageSize); i++, counter_idx++)
+	{
+		PageInfo* pInfo = new (AllocPageInfo()) PageInfo(PROT_WRITE | PROT_READ, true);
+		pInfo->_pcount = &mgr.counters[counter_idx];
+		if (auto old_info = page_map.insert_if_absent((uintptr_t)mmapret + i * PageSize, pInfo))
+		{
+			FreePageInfo(pInfo);
+			old_info->_pcount = &mgr.counters[counter_idx];
+		}
+	}
+
 	mgr.ptr_to_file_offset[mmapret] = { ALLOCATOR_BYTES_PER_BIT * find_num, offset };
+
+	*mmapret = alloc_sz;
+	*(mmapret + 1) = HEAP_CHECK_MAGIC;
 	return mmapret + 2;
 }
 
@@ -257,6 +331,10 @@ extern "C" void* QuailAlloc(size_t sz)
 #ifdef COMPILE_WL_TESTS
 #define VOID_(a) ((void*)a)
 size_t PageSize = 4096;
+bool need_wear_leveling = true;
+quail::LockFreeHashmap<4096, uintptr_t, PageInfo*, BypassAlloactor> page_map;
+
+
 int main()
 {
 	NVMManager mgr(1);

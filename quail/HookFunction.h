@@ -13,7 +13,7 @@ struct OldFuncWrapper
 template <typename TName, typename TFunc, typename TRet, typename... TTypes>
 struct HookFunction
 {
-	typedef typename OldFuncWrapper<TName, TRet, TTypes...>::ptrFunc ptrFunc;
+	typedef typename TName::func_wrapper::ptrFunc ptrFunc;
 	static TRet Func(TTypes... args)
 	{
 		ptrFunc& old_func = OldFuncWrapper<TName, TRet, TTypes...>::old_func;
@@ -33,24 +33,32 @@ struct HookFunction
 	}
 };
 
-
-
-
-#define def_name(_name) struct Name_##_name{ static constexpr char const* name = #_name; };
+#define def_name(_name,_ret_type,...) struct Name_##_name{ static constexpr char const* name = #_name;typedef _ret_type return_type; typedef OldFuncWrapper<Name_##_name,_ret_type,__VA_ARGS__> func_wrapper;};
 #define get_name(_name) Name_##_name;
 
-template <typename TName, typename TRet, typename... TTypes>
-TRet CallOld(TName, TRet, TTypes... args)
+template <typename TName, typename... TTypes>
+typename TName::return_type CallOld(TTypes... args)
 {
-	return OldFuncWrapper<TName, TRet, TTypes...>::old_func(std::forward<TTypes>(args)...);
+	return TName::func_wrapper::old_func(std::forward<TTypes>(args)...);
 }
 
-template <typename TName, typename TFunc, typename TRet, typename... TTypes>
-TRet CallHooked(TName, TFunc, TRet, TTypes... args)
+template <typename TName, typename TFunc, typename... TTypes>
+typename TName::return_type CallHooked(TFunc func, TTypes... args)
 {
-	return HookFunction<TName, TFunc, TRet, TTypes...>::Func(std::forward<TTypes>(args)...);
+	return HookFunction<TName, TFunc, typename TName::return_type, TTypes...>::Func(std::forward<TTypes>(args)...);
 }
 
 
 template <typename TName, typename TRet, typename... TTypes>
 typename OldFuncWrapper<TName, TRet, TTypes...>::ptrFunc OldFuncWrapper<TName, TRet, TTypes...>::old_func = nullptr;
+
+template <typename TName>
+void DoHook(typename TName::func_wrapper::ptrFunc replacement_func)
+{
+	HookStatus ret;
+	if ((ret = HookIt(dlsym(RTLD_NEXT, TName::name), (void**)&TName::func_wrapper::old_func, (void*)replacement_func)) != 0)
+	{
+		fprintf(stderr, "Hook error %d\n", ret);
+		exit(1);
+	}
+}

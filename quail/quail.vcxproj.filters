@@ -1,0 +1,32 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="Interpreter.cpp" />
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="quail.cpp" />
+    <ClCompile Include="quail_reg.cpp" />
+    <ClCompile Include="read.cpp" />
+    <ClCompile Include="soft_dirty.cpp" />
+    <ClCompile Include="third_party\PFishHook\inline_hook.cpp" />
+    <ClCompile Include="user_hooks.cpp" />
+    <ClCompile Include="tests\wear-leveling.cpp">
+      <Filter>tests</Filter>
+    </ClCompile>
+    <ClCompile Include="wear_leveling_test.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="BypassAlloactor.h" />
+    <ClInclude Include="bypass_mmap.h" />
+    <ClInclude Include="HookFunction.h" />
+    <ClInclude Include="LockFreeHashmap.h" />
+    <ClInclude Include="ObjectPool.h" />
+    <ClInclude Include="PageInfo.h" />
+    <ClInclude Include="third_party\PFishHook\PFishHook.h" />
+    <ClInclude Include="util.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="tests">
+      <UniqueIdentifier>{29f13500-c9f9-406b-88cf-c14ca741950e}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

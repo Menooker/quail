@@ -2,11 +2,13 @@
 
 PWD_DIR=$(shell pwd)
 CXX ?= g++
-CXXFLAGS ?= -std=c++11 -g -O2 -I$(PWD_DIR)/third_party/include -L$(PWD_DIR)/third_party/bin/
+CXXFLAGS ?= -std=c++14 -fPIC -g -I$(PWD_DIR)/third_party/include -L$(PWD_DIR)/third_party/bin/ -L$(PWD_DIR)/bin/
 LIBS ?= -lpthread
 
+default: lib lib2
+
 bin/qtest: main.o Interpreter.o
-	$(CXX) -o bin/$@ $(CXXFLAGS) -Wl,--start-group $^  $(LIBS) -lZydis -Wl,--end-group 
+	$(CXX) -o $@ $(CXXFLAGS) -Wl,--start-group $^  $(LIBS) -lZydis -Wl,--end-group 
 quail.o: quail.cpp
 	$(CXX) -c $^ -fPIC $(CXXFLAGS) 
 user_hooks.o: user_hooks.cpp
@@ -15,10 +17,12 @@ soft_dirty.o: soft_dirty.cpp
 	$(CXX) -c $^ -fPIC $(CXXFLAGS) 
 Interpreter.o: Interpreter.cpp
 	$(CXX) -c $^ -fPIC $(CXXFLAGS)	
-lib : quail.o user_hooks.o  Interpreter.o
-	$(CXX) -fPIC $(CXXFLAGS) -shared -o bin/libquail.so  -Wl,--start-group $^ $(LIBS) -lZydis -lPFishHook -ldl -Wl,--end-group 
+lib : quail.o user_hooks.o  Interpreter.o WearLeveling.o
+	$(CXX) -fPIC $(CXXFLAGS) -shared -o bin/libquail.so  -Wl,--start-group $^ $(LIBS) -lPFishHook -ldl -Wl,--end-group 
 lib2 : user_hooks.o soft_dirty.o
-	$(CXX) -fPIC $(CXXFLAGS) -shared -o bin/libquail2.so  -Wl,--start-group $^ $(LIBS) -ldl -Wl,--end-group 
+	$(CXX) -fPIC $(CXXFLAGS) -shared -o bin/libquail2.so  -Wl,--start-group $^ $(LIBS) -lPFishHook -ldl -Wl,--end-group 
+test: wear_leveling_test.o lib
+	$(CXX) -o bin/wear_leveing_test $(CXXFLAGS) -Wl,--start-group wear_leveling_test.o  $(LIBS) -lquail -Wl,--end-group  -Wl,-rpath='$$ORIGIN'
 
 clean:
 	rm -f *.o

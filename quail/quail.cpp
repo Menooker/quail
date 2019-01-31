@@ -14,16 +14,16 @@
 #include "PageInfo.h"
 #include "util.h"
 #include "BypassAlloactor.h"
-#include "HookFunction.h"
 #include <sys/stat.h>
 #include <limits.h>
 #include "PFishHook.h"
+#include "HookFunction.h"
 #include <ucontext.h>
 #include <pthread.h>
 
 static std::thread LockerThread;
 bool init_called = false;
-
+bool need_wear_leveling = false;
 
 extern BypassAlloactor alloactor;
 extern quail::LockFreeHashmap<4096, uintptr_t, PageInfo*, BypassAlloactor> page_map;
@@ -32,6 +32,7 @@ extern thread_local bool flag_bypass_mmap;
 extern bool isCaptureAll;
 static FILE* outfile=nullptr;
 static int sample_interval = 100;
+static uint64_t swap_threshold = 1000;
 
 #ifdef __GNUC__
 #define  likely(x)        __builtin_expect(!!(x), 1) 
@@ -51,6 +52,7 @@ void* LastFault = 0;
 std::mutex GlobalCaptureLock;
 thread_local bool local_locked = false;
 
+
 typedef void(*ptrsignalhandler)(int signal, siginfo_t *si, void *arg);
 ptrsignalhandler old_segfault_sigaction;
 ptrsignalhandler old_trap_sigaction;
@@ -59,6 +61,7 @@ typedef void* PVOID;
 extern int DoInterprete(uint8_t * instr, ucontext* context, PVOID& outfrom, PVOID& outto, int& outsize);
 extern int DoInterpreteSize(uint8_t * instr, int& outsize,uint64_t rcx);
 extern void PrintInstruction(uint8_t * instr);
+
 
 int sigaction_bypass(int sig, const struct sigaction *__restrict act,
 	struct sigaction *__restrict oact);
@@ -132,6 +135,9 @@ PageInfo* get_page_info(uintptr_t p)
 {
 	return page_map.find(p);
 }
+
+extern void QuailSwapPage(void* ptr, PageInfo* pinfo);
+
 void segfault_sigaction(int sig, siginfo_t *si, void *arg)
 {
 	auto itm = page_map.find((uintptr_t)AlignToPage(si->si_addr));
@@ -254,8 +260,13 @@ void segfault_sigaction(int sig, siginfo_t *si, void *arg)
 			perror("Signal: Set protect error: ");
 		}
 	}
-	uint64_t newcnt=itm->count++;
+	uint64_t newcnt=itm->GetCount()++;
 	itm->unprotected = true;
+	if (newcnt > swap_threshold)
+	{
+		QuailSwapPage(AlignToPage(si->si_addr), itm);
+		swap_threshold = itm->GetCount() + 1000;
+	}
 	//printf("Found item\n");
 }
 void trap_sigaction(int sig, siginfo_t *si, void *arg)
@@ -343,9 +354,8 @@ extern "C" __pid_t waitpid(__pid_t __pid, int *__stat_loc, int __options)
 	return ret;
 }
 
-typedef ssize_t(*ptrread)(int fd, void *buf, size_t nbytes);
+def_name(read, ssize_t, int , void *, size_t);
 typedef ssize_t(*ptrfread)(FILE* fd, void *buf, size_t nbytes);
-ptrread oldread;
 ptrfread old_IO_file_read;
 int cnt = 0;
 extern "C" ssize_t myread(int fd, void *buf, size_t nbytes)
@@ -355,7 +365,7 @@ extern "C" ssize_t myread(int fd, void *buf, size_t nbytes)
 	MProtectRange(buf, nbytes,true);
 	//else
 	//	TouchRange(buf, nbytes);
-	ssize_t ret = oldread(fd, buf, nbytes);
+	ssize_t ret = CallOld<Name_read>(fd, buf, nbytes);
 	if (isCaptureAll)
 		MProtectRange(buf, nbytes, false);
 	else
@@ -379,14 +389,12 @@ extern "C" ssize_t myfileread(FILE* fp, void *buf, size_t nbytes)
 	return ret;
 }
 
-typedef int(*ptrpthread_once)(pthread_once_t *__once_control,
-	void(*__init_routine) (void));
-ptrpthread_once oldpthread_once;
+def_name(pthread_once, int, pthread_once_t *, void(*) (void));
 int mypthread_once(pthread_once_t *__once_control,
 	void(*__init_routine) (void))
 {
 	if(!init_called)
-		return oldpthread_once(__once_control, __init_routine);
+		return CallOld<Name_pthread_once>(__once_control, __init_routine);
 
 	auto itm = page_map.find((uintptr_t)AlignToPage(__once_control));
 	if (itm)
@@ -397,20 +405,20 @@ int mypthread_once(pthread_once_t *__once_control,
 	}
 	//MProtectRange(__once_control, sizeof(pthread_once_t), true);
 
-	int ret = oldpthread_once(__once_control, __init_routine);
+	int ret = CallOld<Name_pthread_once>(__once_control, __init_routine);
 	return ret;
 }
 
 
 
-def_name(__xstat)
+def_name(__xstat, int, int, const char *, struct stat *);
 auto my_stat = [](int ver, const char *__restrict file, struct stat *__restrict buf)->int {
 	fprintf(stderr, "stat %s\n", file);
 	//if (isCaptureAll)
 		MProtectRange(buf, sizeof(struct stat), true);
 	//else
 	//	TouchRange(buf, sizeof(struct stat));
-	auto ret = CallOld(Name___xstat(), int(0), ver, file, buf);
+	auto ret = CallOld<Name___xstat>( ver, file, buf);
 	if (isCaptureAll)
 		MProtectRange(buf, sizeof(struct stat), false);
 	else
@@ -418,17 +426,16 @@ auto my_stat = [](int ver, const char *__restrict file, struct stat *__restrict 
 	return ret;
 };
 extern "C" int __xstat(int ver, const char *__restrict file, struct stat *__restrict buf) {
-	return CallHooked(Name___xstat(), my_stat, int(), ver, file, buf);
+	return CallHooked<Name___xstat>(my_stat, ver, file, buf);
 }
 
-typedef int(*ptrlxstat)(int ver, const char *__restrict file, struct stat *__restrict buf);
-ptrlxstat oldlxstat;
+def_name(__lxstat, int, int, const char *, struct stat *);
 extern "C" int mylxstat(int ver, const char *__restrict file, struct stat *__restrict buf) {
 	//if (isCaptureAll)
 		MProtectRange(buf, sizeof(struct stat), true);
 	//else
 	//	TouchRange(buf, sizeof(struct stat));
-	auto ret = oldlxstat(ver, file, buf);
+	auto ret = CallOld<Name___lxstat>(ver, file, buf);
 	if (isCaptureAll)
 		MProtectRange(buf, sizeof(struct stat), false);
 	else
@@ -436,13 +443,13 @@ extern "C" int mylxstat(int ver, const char *__restrict file, struct stat *__res
 	return ret;
 }
 
-def_name(__fxstat);
+def_name(__fxstat,int, int , int , struct stat *);
 auto my_fstat = [](int ver, int fd, struct stat *buf)->int {
 	//if (isCaptureAll)
 		MProtectRange(buf, sizeof(struct stat), true);
 	//else
 	//	TouchRange(buf, sizeof(struct stat));
-	auto ret = CallOld(Name___fxstat(), int(0), ver, fd, buf);
+	auto ret = CallOld<Name___fxstat>(ver, fd, buf);
 	if (isCaptureAll)
 		MProtectRange(buf, sizeof(struct stat), false);
 	else
@@ -451,7 +458,7 @@ auto my_fstat = [](int ver, int fd, struct stat *buf)->int {
 };
 extern "C" int __fxstat(int ver, int fd, struct stat *buf)
 {
-	return CallHooked(Name___fxstat(), my_fstat, int(), ver, fd, buf);
+	return CallHooked<Name___fxstat>(my_fstat, ver, fd, buf);
 }
 
 
@@ -617,6 +624,8 @@ void InitSignal()
 __attribute__((constructor)) static void OnInit(void);
 __attribute__((destructor)) static void OnExit(void);
 
+extern "C" void quail_hook_mem_alloc_funcs();
+
 void OnInit()
 {
 	if (init_called)
@@ -647,29 +656,22 @@ void OnInit()
 	{
 		sample_interval = atoi(pEnv);
 	}
+
+	pEnv = getenv("QUAIL_SWAP_THRESHOLD");
+	if (pEnv && pEnv[0] == 0 || !pEnv)
+	{
+		swap_threshold = 1000;
+	}
+	else
+	{
+		swap_threshold = atoi(pEnv);
+	}
+
 	//fprintf(stderr, "DLL load\n");
-	void* pread = dlsym(RTLD_NEXT, "read");
-	if (!pread)
-	{
-		fprintf(stderr, "read not found\n");
-		exit(1);
-	}
 	HookStatus ret;
-	if ((ret=HookIt(pread, (void**)&oldread, (void*)myread)) != 0)
-	{
-		fprintf(stderr, "Hook error %d\n",ret);
-		exit(1);
-	}
-	if ((ret=HookIt(dlsym(RTLD_NEXT, "__lxstat"), (void**)&oldlxstat, (void*)mylxstat)) != 0)
-	{
-		fprintf(stderr, "Hook error %d\n",ret);
-		exit(1);
-	}
-	if ((ret = HookIt(dlsym(RTLD_NEXT, "pthread_once"), (void**)&oldpthread_once, (void*)mypthread_once)) != 0)
-	{
-		fprintf(stderr, "Hook error %d\n", ret);
-		exit(1);
-	}
+	DoHook<Name_read>(myread);
+	DoHook<Name___lxstat>(mylxstat);
+	DoHook<Name_pthread_once>(mypthread_once);
 	void* p_IO_file_read = dlsym(RTLD_NEXT, "_IO_file_read");
 	if (p_IO_file_read)
 	{
@@ -683,6 +685,12 @@ void OnInit()
 	InitInterpreter();
 	InitSignal();
 	init_called = true;
+	pEnv = getenv("QUAIL_PROFILE_MODE");
+	if (pEnv && pEnv[0] == '1' && pEnv[1] == 0)
+		quail_hook_mem_alloc_funcs();
+	else
+		need_wear_leveling = true;
+		
 }
 
 void OnExit()
@@ -690,7 +698,7 @@ void OnExit()
 	page_map.foreach([](const uintptr_t& page, const PPageInfo& info) {
 		//std::cout << "Page " << page << " Count = " << (unsigned)info->count << std::endl;
 		//if(info->count>0)
-		fprintf(outfile, "Page %p Count = %d\n", (void*)page, (unsigned)info->count);
+		fprintf(outfile, "Page %p Count = %d\n", (void*)page, (unsigned)info->GetCount());
 		return true;
 	});
 	//page_map.stat();

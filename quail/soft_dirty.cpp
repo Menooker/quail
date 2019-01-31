@@ -21,6 +21,7 @@
 __attribute__((constructor)) static void OnInit(void);
 __attribute__((destructor)) static void OnExit(void);
 bool init_called=false;
+bool need_wear_leveling = false;
 static bool thread_do_exit = false;
 int pagemapfd = 0;
 static std::thread WatcherThread;
@@ -99,6 +100,7 @@ void WatcherThreadProc()
 	}
 }
 
+extern "C" void quail_hook_mem_alloc_funcs();
 
 void OnInit()
 {
@@ -142,6 +144,13 @@ void OnInit()
 
 	init_called = true;
 	flag_bypass_mmap = false;
+
+	pEnv = getenv("QUAIL_PROFILE_MODE");
+	if (pEnv && pEnv[0] == '1' && pEnv[1] == 0)
+		quail_hook_mem_alloc_funcs();
+	else
+		need_wear_leveling = true;
+
 }
 
 void OnExit()
