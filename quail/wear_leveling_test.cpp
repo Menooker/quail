@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <assert.h>
 
 extern "C" void QuailFree(void* ptr);
 extern "C" void* QuailAlloc(size_t sz);
@@ -23,18 +24,24 @@ int main()
 	QuailFree(buf0);
 	//printf("===================Before write\n");
 	//print_map();
-	fprintf(stderr, "Alloc buffer %p", buf);
+	fprintf(stderr, "Alloc buffer %p\n", buf);
+	buf[1002] = 314;
 	for (int i = 0; i < 1200; i++)
 	{
 		buf[1000] = 23;
 	}
 	fprintf(stderr, "===================After write\n");
+	assert(buf[1002] == 314);
+	buf[999] = 123;
 	//print_map();
 	for (int i = 0; i < 1200; i++)
 	{
 		buf[1000] = 23;
 	}
 	fprintf(stderr, "===================After write2\n");
+	assert(buf[1002] == 314);
+	assert(buf[999] == 123);
+	print_map();
 	QuailFree(buf);
 	//print_map();
 }

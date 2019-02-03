@@ -80,6 +80,7 @@
     <ClInclude Include="BitSet.h" />
     <ClInclude Include="BypassAlloactor.h" />
     <ClInclude Include="bypass_mmap.h" />
+    <ClInclude Include="CountMinSketch.h" />
     <ClInclude Include="HookFunction.h" />
     <ClInclude Include="LockFreeHashmap.h" />
     <ClInclude Include="ObjectPool.h" />

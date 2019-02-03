@@ -20,10 +20,12 @@
 #include "HookFunction.h"
 #include <ucontext.h>
 #include <pthread.h>
+#include "CountMinSketch.h"
 
 static std::thread LockerThread;
 bool init_called = false;
 bool need_wear_leveling = false;
+static bool is_adaptive_sampling = false;
 
 extern BypassAlloactor alloactor;
 extern quail::LockFreeHashmap<4096, uintptr_t, PageInfo*, BypassAlloactor> page_map;
@@ -33,6 +35,7 @@ extern bool isCaptureAll;
 static FILE* outfile=nullptr;
 static int sample_interval = 100;
 static uint64_t swap_threshold = 1000;
+static uint64_t swap_threshold_increment = 1000;
 
 #ifdef __GNUC__
 #define  likely(x)        __builtin_expect(!!(x), 1) 
@@ -62,6 +65,8 @@ extern int DoInterprete(uint8_t * instr, ucontext* context, PVOID& outfrom, PVOI
 extern int DoInterpreteSize(uint8_t * instr, int& outsize,uint64_t rcx);
 extern void PrintInstruction(uint8_t * instr);
 
+static quail::CMSCounter<std::atomic<uint64_t>, 511> cmscounter[2];
+static int current_counter_idx = 0;
 
 int sigaction_bypass(int sig, const struct sigaction *__restrict act,
 	struct sigaction *__restrict oact);
@@ -182,35 +187,9 @@ void segfault_sigaction(int sig, siginfo_t *si, void *arg)
 		//{
 		uintptr_t delta = (uintptr_t)AlignToPage(si->si_addr) + PageSize - (uintptr_t)si->si_addr;
 		SingleStepSize = PageSize;
-		//bool isHalfSpan = false; //if the access spans over two pages and the latter page is also watched
 		if (delta < 512 / 8) //check if the memory access span accross two pages
 		{
-			//512-bit is the size of zmm register
-			/*int size;
-			if (DoInterpreteSize((uint8_t*)context->uc_mcontext.gregs[REG_RIP], size, context->uc_mcontext.gregs[REG_RCX]) < 0 || size==0)
-			{
-				PrintInstruction((uint8_t*)context->uc_mcontext.gregs[REG_RIP]);
-				exit(1);
-			}
-			if (size/8 > delta)
-			{*/
-			/*if(si->si_addr==LastFault)
-			{
-				fprintf(stderr, "Known double fault %p\n",si->si_addr);
-				PrintInstruction((uint8_t*)context->uc_mcontext.gregs[REG_RIP]);
-				auto itm2 = page_map.find((uintptr_t)AlignToPage(si->si_addr) + PageSize);
-				if (itm2)
-				{
-					SingleStepSize = PageSize * 2;
-					itm2->count++;
-				}
-				else
-					SingleStepSize = PageSize;
-			}
-			else*/
-			{
 				LastFault = AlignToPage(si->si_addr);
-			}
 		}
 		else
 		{
@@ -231,27 +210,7 @@ void segfault_sigaction(int sig, siginfo_t *si, void *arg)
 		{
 			fprintf(stderr,"Signal: Set protect error: %d\n",status);
 		}
-
-		//}
 		context->uc_mcontext.gregs[REG_EFL]|= EFLAG_TF_MASK;
-		//fprintf(stderr, "segfault %p, page %p\n", context->uc_mcontext.gregs[REG_RIP], si->si_addr);
-
-		/*unsigned char *pc = (unsigned char *)context->uc_mcontext.gregs[REG_RIP];
-		void* from, *to;
-		int size;
-		int instrsize = DoInterprete(pc, context, from, to, size);
-		if(-1== instrsize)
-			exit(0);
-		if (mprotect(AlignToPage(si->si_addr), PageSize, itm->prot) != 0)
-		{
-			perror("Signal: Set protect error: ");
-		}
-		memcpy(to, from, size);
-		context->uc_mcontext.gregs[REG_RIP] += instrsize;
-		if (mprotect(AlignToPage(si->si_addr), PageSize, itm->prot & ~(PROT_WRITE)) != 0)
-		{
-			perror("Signal: Set protect error: ");
-		}*/
 	}
 	else
 	{
@@ -260,14 +219,16 @@ void segfault_sigaction(int sig, siginfo_t *si, void *arg)
 			perror("Signal: Set protect error: ");
 		}
 	}
+
+	cmscounter[current_counter_idx].Put((uintptr_t)si->si_addr);
+
 	uint64_t newcnt=itm->GetCount()++;
 	itm->unprotected = true;
-	if (newcnt > swap_threshold)
+	if (need_wear_leveling && newcnt > swap_threshold)
 	{
 		QuailSwapPage(AlignToPage(si->si_addr), itm);
-		swap_threshold = itm->GetCount() + 1000;
+		swap_threshold = itm->GetCount() + swap_threshold_increment;
 	}
-	//printf("Found item\n");
 }
 void trap_sigaction(int sig, siginfo_t *si, void *arg)
 {
@@ -475,6 +436,19 @@ static void LockerThreadProc()
 	for (;;)
 	{
 		//fprintf(stderr, "Locker Thread\n");
+		float simi = cmscounter[0].Similarity(cmscounter[1]);
+		fprintf(stderr, "Similarity %f\n", simi);
+		if (is_adaptive_sampling)
+		{
+			if (simi > 0.9)
+				sample_interval -= 50;
+			if (simi < 0.9)
+				sample_interval += 50;
+			sample_interval = std::max(sample_interval, 50);
+			sample_interval = std::min(sample_interval, 400);
+		}
+		current_counter_idx = (current_counter_idx + 1) % 2;
+		cmscounter[current_counter_idx].Reset();
 		page_map.foreach([](const uintptr_t& page, const PPageInfo& info) {
 			if (info->unprotected)
 			{
@@ -487,6 +461,7 @@ static void LockerThreadProc()
 			}
 			return true;
 		});
+		fprintf(stderr, "Sleep %d\n", sample_interval);
 		std::this_thread::sleep_for(std::chrono::milliseconds(sample_interval));
 	}
 }
@@ -667,6 +642,19 @@ void OnInit()
 		swap_threshold = atoi(pEnv);
 	}
 
+	pEnv = getenv("QUAIL_SWAP_THRESHOLD_INC");
+	if (pEnv && pEnv[0] == 0 || !pEnv)
+	{
+		swap_threshold_increment = 1000;
+	}
+	else
+	{
+		swap_threshold_increment = atoi(pEnv);
+	}
+
+	pEnv = getenv("QUAIL_ADAPTIVE_SAMPLING");
+	if (pEnv && pEnv[0] == '1' && pEnv[1] == 0)
+		is_adaptive_sampling = true;
 	//fprintf(stderr, "DLL load\n");
 	HookStatus ret;
 	DoHook<Name_read>(myread);

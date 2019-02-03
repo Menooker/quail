@@ -23,6 +23,7 @@
     <ClInclude Include="PageInfo.h" />
     <ClInclude Include="third_party\PFishHook\PFishHook.h" />
     <ClInclude Include="util.h" />
+    <ClInclude Include="CountMinSketch.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="tests">
