@@ -85,7 +85,7 @@ struct NVMManager
 	};
 	std::map<void*, MemChunkInfo> ptr_to_file_offset;
 
-	void SplitMemChunk(void* ptr, size_t len, size_t offset)
+	std::map<void*, MemChunkInfo>::iterator GetNodeForPtr(void* ptr)
 	{
 		//first find the chunk where ptr is
 		auto itr = ptr_to_file_offset.lower_bound(ptr);
@@ -97,9 +97,15 @@ struct NVMManager
 		{
 			--itr;
 		}
+		return itr;
+
+	}
+
+	void SplitMemChunk(void* ptr, size_t len, size_t offset)
+	{
+		auto itr = GetNodeForPtr(ptr);
 		assert(itr->first <= ptr &&
 			((char*)itr->first + itr->second.len >= (char*)ptr + len));
-
 		//split the chunk into 3 (maybe 2) smaller chunks
 		//calculate the right & left hand side chunk
 		size_t lhs_len = (char*)ptr - (char*)itr->first;
@@ -183,6 +189,21 @@ static NVMManager& GetManager()
 	return mgr;
 }
 
+extern "C" std::atomic<uint64_t>* QuailGetCounters()
+{
+	return GetManager().counters;
+}
+
+extern "C" size_t QuailGetWriteCount(void* ptr)
+{
+	auto& mgr = GetManager();
+	auto itr = mgr.GetNodeForPtr(ptr);
+	assert(itr->first <= ptr &&
+		((char*)itr->first + itr->second.len >= (char*)ptr));
+	auto offset = itr->second.offset + ((char*)ptr - (char*)itr->first) / ALLOCATOR_BYTES_PER_BIT;
+	return mgr.counters[offset];
+}
+
 //swap one page (ptr) with a "page" in NVM with given offset
 static void QuailSwap(void* ptr, size_t offset)
 {
@@ -225,7 +246,7 @@ void QuailSwapPage(void* ptr, PageInfo* pinfo)
 	QuailSwap(ptr, idx * ALLOCATOR_BYTES_PER_BIT);
 	assert(pinfo);
 	pinfo->_pcount = &mgr.counters[idx];
-	fprintf(stderr, "Swap the NVM of virtual address %p with NVM physical offset %llx\n", ptr, idx * ALLOCATOR_BYTES_PER_BIT);
+	//fprintf(stderr, "Swap the NVM of virtual address %p with NVM physical offset %llx\n", ptr, idx * ALLOCATOR_BYTES_PER_BIT);
 }
 
 extern "C" void QuailFree(void* ptr)

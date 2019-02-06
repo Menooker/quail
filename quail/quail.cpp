@@ -220,7 +220,8 @@ void segfault_sigaction(int sig, siginfo_t *si, void *arg)
 		}
 	}
 
-	cmscounter[current_counter_idx].Put((uintptr_t)si->si_addr);
+	if(is_adaptive_sampling)
+		cmscounter[current_counter_idx].Put((uintptr_t)si->si_addr);
 
 	uint64_t newcnt=itm->GetCount()++;
 	itm->unprotected = true;
@@ -251,7 +252,7 @@ void trap_sigaction(int sig, siginfo_t *si, void *arg)
 		}
 		if (SingleStepSize == 2 * PageSize)
 		{
-			mprotect(SingleStepPage, PageSize, SingleStepProt & ~(PROT_WRITE));
+			mprotect((char*)SingleStepPage+ PageSize, PageSize, SingleStepProt & ~(PROT_WRITE));
 		}
 		else if (SingleStepSize > 2 * PageSize)
 		{
@@ -436,19 +437,19 @@ static void LockerThreadProc()
 	for (;;)
 	{
 		//fprintf(stderr, "Locker Thread\n");
-		float simi = cmscounter[0].Similarity(cmscounter[1]);
-		fprintf(stderr, "Similarity %f\n", simi);
 		if (is_adaptive_sampling)
 		{
+			float simi = cmscounter[0].Similarity(cmscounter[1]);
+			fprintf(stderr, "Similarity %f\n", simi);
 			if (simi > 0.9)
 				sample_interval -= 50;
 			if (simi < 0.9)
 				sample_interval += 50;
 			sample_interval = std::max(sample_interval, 50);
-			sample_interval = std::min(sample_interval, 400);
+			sample_interval = std::min(sample_interval, 800);
+			current_counter_idx = (current_counter_idx + 1) % 2;
+			cmscounter[current_counter_idx].Reset();
 		}
-		current_counter_idx = (current_counter_idx + 1) % 2;
-		cmscounter[current_counter_idx].Reset();
 		page_map.foreach([](const uintptr_t& page, const PPageInfo& info) {
 			if (info->unprotected)
 			{
@@ -461,7 +462,7 @@ static void LockerThreadProc()
 			}
 			return true;
 		});
-		fprintf(stderr, "Sleep %d\n", sample_interval);
+		//fprintf(stderr, "Sleep %d\n", sample_interval);
 		std::this_thread::sleep_for(std::chrono::milliseconds(sample_interval));
 	}
 }
