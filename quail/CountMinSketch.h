@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <algorithm>
+#include <numeric>
 #include <array>
 #include <math.h>
 namespace quail
