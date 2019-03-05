@@ -93,7 +93,7 @@ void WatcherThreadProc()
 				return false;
 			if (IsPageModified(page, modified) == 0 && modified)
 			{
-				info->count++;
+				info->GetCount()++;
 			}
 			return true;
 		});
@@ -161,7 +161,7 @@ void OnExit()
 	page_map.foreach([](const uintptr_t& page, const PPageInfo& info) {
 		//std::cout << "Page " << page << " Count = " << (unsigned)info->count << std::endl;
 		//if (info->count>0)
-		fprintf(outfile, "Page %p Count = %d\n", (void*)page, (unsigned)info->count);
+		fprintf(outfile, "Page %p Count = %d\n", (void*)page, (unsigned)info->GetCount());
 		return true;
 	});
 }

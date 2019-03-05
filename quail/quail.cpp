@@ -26,6 +26,7 @@ static std::thread LockerThread;
 bool init_called = false;
 bool need_wear_leveling = false;
 static bool is_adaptive_sampling = false;
+static int adaptive_sampling_super_step_size = 0;
 
 extern BypassAlloactor alloactor;
 extern quail::LockFreeHashmap<4096, uintptr_t, PageInfo*, BypassAlloactor> page_map;
@@ -33,9 +34,11 @@ extern thread_local bool flag_bypass_mmap;
 
 extern bool isCaptureAll;
 static FILE* outfile=nullptr;
+static FILE* intv_outfile = nullptr;
 static int sample_interval = 100;
 static uint64_t swap_threshold = 1000;
 static uint64_t swap_threshold_increment = 1000;
+static int sampling_steps = 0;
 
 #ifdef __GNUC__
 #define  likely(x)        __builtin_expect(!!(x), 1) 
@@ -375,7 +378,7 @@ int mypthread_once(pthread_once_t *__once_control,
 
 def_name(__xstat, int, int, const char *, struct stat *);
 auto my_stat = [](int ver, const char *__restrict file, struct stat *__restrict buf)->int {
-	fprintf(stderr, "stat %s\n", file);
+	//fprintf(stderr, "stat %s\n", file);
 	//if (isCaptureAll)
 		MProtectRange(buf, sizeof(struct stat), true);
 	//else
@@ -431,7 +434,6 @@ extern "C" int __fxstat(int ver, int fd, struct stat *buf)
 ///////////////////
 
 
-
 static void LockerThreadProc()
 {
 	for (;;)
@@ -439,16 +441,22 @@ static void LockerThreadProc()
 		//fprintf(stderr, "Locker Thread\n");
 		if (is_adaptive_sampling)
 		{
-			float simi = cmscounter[0].Similarity(cmscounter[1]);
-			fprintf(stderr, "Similarity %f\n", simi);
-			if (simi > 0.9)
-				sample_interval -= 50;
-			if (simi < 0.9)
-				sample_interval += 50;
-			sample_interval = std::max(sample_interval, 50);
-			sample_interval = std::min(sample_interval, 800);
-			current_counter_idx = (current_counter_idx + 1) % 2;
-			cmscounter[current_counter_idx].Reset();
+			sampling_steps = sampling_steps + 1;
+			if (sampling_steps >= adaptive_sampling_super_step_size)
+			{
+				sampling_steps = 0;
+				float simi = cmscounter[0].Similarity(cmscounter[1]);
+				if(intv_outfile)
+					fprintf(intv_outfile, "Similarity %f\n", simi);
+				if (simi > 0.9)
+					sample_interval -= 25;
+				if (simi < 0.9)
+					sample_interval += 25;
+				sample_interval = std::max(sample_interval, 50);
+				sample_interval = std::min(sample_interval, 1800);
+				current_counter_idx = (current_counter_idx + 1) % 2;
+				cmscounter[current_counter_idx].Reset();
+			}
 		}
 		page_map.foreach([](const uintptr_t& page, const PPageInfo& info) {
 			if (info->unprotected)
@@ -462,7 +470,8 @@ static void LockerThreadProc()
 			}
 			return true;
 		});
-		//fprintf(stderr, "Sleep %d\n", sample_interval);
+		if(intv_outfile)
+			fprintf(intv_outfile, "Sleep %d\n", sample_interval);
 		std::this_thread::sleep_for(std::chrono::milliseconds(sample_interval));
 	}
 }
@@ -623,6 +632,14 @@ void OnInit()
 		outfile = fopen(pEnv, "a");
 	}
 
+	pEnv = getenv("QUAIL_INTERVAL_OUTPUT");
+	if (pEnv && pEnv[0] == 0 || !pEnv)
+		intv_outfile = nullptr;
+	else if (!strcmp(pEnv, "@stderr"))
+		intv_outfile = stderr;
+	else
+		intv_outfile = fopen(pEnv, "a");
+
 	pEnv = getenv("QUAIL_INTERVAL");
 	if (pEnv && pEnv[0] == 0 || !pEnv)
 	{
@@ -654,8 +671,11 @@ void OnInit()
 	}
 
 	pEnv = getenv("QUAIL_ADAPTIVE_SAMPLING");
-	if (pEnv && pEnv[0] == '1' && pEnv[1] == 0)
-		is_adaptive_sampling = true;
+	if (pEnv)
+	{
+		adaptive_sampling_super_step_size = atoi(pEnv);
+		is_adaptive_sampling = (adaptive_sampling_super_step_size!=0);
+	}
 	//fprintf(stderr, "DLL load\n");
 	HookStatus ret;
 	DoHook<Name_read>(myread);
@@ -671,6 +691,7 @@ void OnInit()
 		}
 	}
 	//sleep(20);
+	sampling_steps = 0;
 	InitInterpreter();
 	InitSignal();
 	init_called = true;
