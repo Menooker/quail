@@ -8,7 +8,7 @@
 
 //#define FAKE_WEAR_LEVELING 1
 
-#define BUCKET_SIZE (1024*3-1)
+int BUCKET_SIZE = (1024 * 3 - 1);
 
 extern "C" void QuailFree(void* ptr);
 extern "C" void* QuailAlloc(size_t sz);
@@ -67,9 +67,15 @@ class HashMap
 		Node* next;
 	};
 
-	Node* buckets[BUCKET_SIZE];
+	Node* buckets[0];
 
 public:
+
+	static size_t GetAllocSize()
+	{
+		return sizeof(HashMap) + sizeof(Node*)*(BUCKET_SIZE);
+	}
+
 	HashMap()
 	{
 		for (int i = 0; i < BUCKET_SIZE; i++)
@@ -117,9 +123,17 @@ private:
 	}
 };
 
-
-int main()
+const int RND_CNT = 10;
+int round2nearest(float x)
 {
+	return std::round(x / RND_CNT)*RND_CNT;
+}
+
+int main(int argc, char* argv[])
+{
+	if (argc != 2)
+		exit(-1);
+	BUCKET_SIZE = atoi(argv[1]);
 #ifdef FAKE_WEAR_LEVELING
 	MyAlloactor::addr = (char*)mmap(nullptr, MAX_ALLOC_SIZE, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
 #else
@@ -127,14 +141,14 @@ int main()
 	auto counters = QuailGetCounters();
 #endif
 	typedef HashMap<uint64_t, uint64_t, MyAlloactor> HMap;
-	HMap *mymap = new (MyAlloactor::alloc(sizeof(HMap)))HMap();
+	HMap *mymap = new (MyAlloactor::alloc(HMap::GetAllocSize()))HMap();
 
 	std::mt19937 gen{ 1234 };
 	const int MAX_IDX = 0xffff;
 	std::normal_distribution<> d{ MAX_IDX / 2,MAX_IDX / 4 };
 
-	for (int n = 0; n < 10000; ++n) {
-		uint64_t idx = (uint64_t)std::round(d(gen)) % MAX_IDX;
+	for (int n = 0; n < 100000; ++n) {
+		uint64_t idx = round2nearest(d(gen)) % MAX_IDX;
 		mymap->Set(idx, n);
 	}
 	int cnt_sum = 0;

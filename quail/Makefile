@@ -21,7 +21,9 @@ lib : quail.o user_hooks.o  Interpreter.o WearLeveling.o
 	$(CXX) -fPIC $(CXXFLAGS) -shared -o bin/libquail.so  -Wl,--start-group $^ $(LIBS) -lPFishHook -ldl -Wl,--end-group 
 lib2 : user_hooks.o soft_dirty.o
 	$(CXX) -fPIC $(CXXFLAGS) -shared -o bin/libquail2.so  -Wl,--start-group $^ $(LIBS) -lPFishHook -ldl -Wl,--end-group 
-test: wear_leveling_test.o lib
+faketest: wear_leveling_test.cpp
+	$(CXX) -o bin/fake_wear_leveing_test $(CXXFLAGS) -DFAKE_WEAR_LEVELING wear_leveling_test.cpp
+test: wear_leveling_test.o lib faketest
 	$(CXX) -o bin/wear_leveing_test $(CXXFLAGS) -Wl,--start-group wear_leveling_test.o  $(LIBS) -lquail -Wl,--end-group  -Wl,-rpath='$$ORIGIN'
 
 clean:
