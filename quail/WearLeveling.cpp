@@ -219,7 +219,7 @@ static void QuailSwap(void* ptr, size_t offset)
 	//unmap the old NVM
 	ret = munmap(ptr, PageSize);
 	//re-mmap the NVM with new physical location
-	mmapret = (char*)mmap(ptr, PageSize, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_FIXED, mgr.fd, offset);
+	mmapret = (char*)mmap(ptr, PageSize, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_POPULATE | MAP_FIXED, mgr.fd, offset);
 	assert(mmapret == ptr);
 	mgr.SplitMemChunk(ptr, PageSize, offset);
 }

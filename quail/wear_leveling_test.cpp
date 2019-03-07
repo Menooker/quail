@@ -132,11 +132,12 @@ int round2nearest(float x)
 
 int main(int argc, char* argv[])
 {
-	if (argc != 4)
+	if (argc != 5)
 		exit(-1);
 	BUCKET_SIZE = atoi(argv[1]);
 	long access_times = atoi(argv[2]);
-	int need_leveling = atoi(argv[3]);
+	float diff = atof(argv[3]);
+	int need_leveling = atoi(argv[4]);
 #ifdef FAKE_WEAR_LEVELING
 	MyAlloactor::addr = (char*)mmap(nullptr, MAX_ALLOC_SIZE, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
 #else
@@ -158,12 +159,14 @@ int main(int argc, char* argv[])
 
 	std::mt19937 gen{ 1234 };
 	const int MAX_IDX = 0xffff;
-	std::normal_distribution<> d{ MAX_IDX / 2,MAX_IDX / 4 };
+	std::normal_distribution<> d{ MAX_IDX / 2,MAX_IDX / diff };
 
 	for (int n = 0; n < access_times; ++n) {
 		uint64_t idx = round2nearest(d(gen)) % MAX_IDX;
 		mymap->Set(idx, n);
+		//assert(mymap->Get(idx) == n);
 	}
+	printf("Time = %ld\n", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - starttime).count());
 	int cnt_sum = 0;
 #ifdef FAKE_WEAR_LEVELING
 	for (int i = 0; i < MyAlloactor::cur_len / ALLOCATOR_BYTES_PER_BIT; i++)
@@ -185,7 +188,6 @@ int main(int argc, char* argv[])
 	}
 #endif
 	printf("Total = %d\n", cnt_sum);
-	printf("Time = %ld\n", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - starttime).count());
 }
 /*
 void print_map()
