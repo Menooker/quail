@@ -2,7 +2,7 @@
 
 PWD_DIR=$(shell pwd)
 CXX ?= g++
-CXXFLAGS ?= -std=c++14 -fPIC -O2 -g -I$(PWD_DIR)/third_party/include -L$(PWD_DIR)/third_party/bin/ -L$(PWD_DIR)/bin/
+CXXFLAGS ?= -std=c++14 -fPIC -O0 -g -I$(PWD_DIR)/third_party/include -L$(PWD_DIR)/third_party/bin/ -L$(PWD_DIR)/bin/
 LIBS ?= -lpthread
 
 default: lib lib2

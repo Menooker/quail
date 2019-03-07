@@ -231,7 +231,7 @@ void segfault_sigaction(int sig, siginfo_t *si, void *arg)
 	if (need_wear_leveling && newcnt > swap_threshold)
 	{
 		QuailSwapPage(AlignToPage(si->si_addr), itm);
-		swap_threshold = itm->GetCount() + swap_threshold_increment;
+		swap_threshold = std::max(swap_threshold, itm->GetCount() + swap_threshold_increment);
 	}
 }
 void trap_sigaction(int sig, siginfo_t *si, void *arg)

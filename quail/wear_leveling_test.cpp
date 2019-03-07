@@ -5,6 +5,7 @@
 #include <sys/mman.h>
 #include "LockFreeHashmap.h"
 #include <random>
+#include <chrono>
 
 //#define FAKE_WEAR_LEVELING 1
 
@@ -16,7 +17,7 @@ extern "C" size_t QuailGetWriteCount(void* ptr);
 extern "C" std::atomic<uint64_t>* QuailGetCounters();
 
 constexpr int NVM_SIZE_IN_BYTES = (32 * 1024 * 1024);
-constexpr int MAX_ALLOC_SIZE = 30 * 1024 * 1024;
+constexpr int MAX_ALLOC_SIZE = 8 * 1024 * 1024;
 constexpr int ALLOCATOR_BYTES_PER_BIT = 4096;
 
 int counts[NVM_SIZE_IN_BYTES / ALLOCATOR_BYTES_PER_BIT] = { 0 };
@@ -151,6 +152,7 @@ int main(int argc, char* argv[])
 		counters = nullptr;
 	}
 #endif
+	auto starttime = std::chrono::steady_clock::now();
 	typedef HashMap<uint64_t, uint64_t, MyAlloactor> HMap;
 	HMap *mymap = new (MyAlloactor::alloc(HMap::GetAllocSize()))HMap();
 
@@ -183,6 +185,7 @@ int main(int argc, char* argv[])
 	}
 #endif
 	printf("Total = %d\n", cnt_sum);
+	printf("Time = %ld\n", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - starttime).count());
 }
 /*
 void print_map()
