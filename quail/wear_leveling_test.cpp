@@ -131,14 +131,25 @@ int round2nearest(float x)
 
 int main(int argc, char* argv[])
 {
-	if (argc != 2)
+	if (argc != 4)
 		exit(-1);
 	BUCKET_SIZE = atoi(argv[1]);
+	long access_times = atoi(argv[2]);
+	int need_leveling = atoi(argv[3]);
 #ifdef FAKE_WEAR_LEVELING
 	MyAlloactor::addr = (char*)mmap(nullptr, MAX_ALLOC_SIZE, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
 #else
-	MyAlloactor::addr = (char*)QuailAlloc(MAX_ALLOC_SIZE - 8);
-	auto counters = QuailGetCounters();
+	std::atomic<uint64_t>* counters;
+	if(need_leveling)
+	{
+		MyAlloactor::addr = (char*)QuailAlloc(MAX_ALLOC_SIZE - 8);
+		counters = QuailGetCounters();
+	}
+	else
+	{
+		MyAlloactor::addr = (char*)mmap(nullptr, MAX_ALLOC_SIZE, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
+		counters = nullptr;
+	}
 #endif
 	typedef HashMap<uint64_t, uint64_t, MyAlloactor> HMap;
 	HMap *mymap = new (MyAlloactor::alloc(HMap::GetAllocSize()))HMap();
@@ -147,7 +158,7 @@ int main(int argc, char* argv[])
 	const int MAX_IDX = 0xffff;
 	std::normal_distribution<> d{ MAX_IDX / 2,MAX_IDX / 4 };
 
-	for (int n = 0; n < 100000; ++n) {
+	for (int n = 0; n < access_times; ++n) {
 		uint64_t idx = round2nearest(d(gen)) % MAX_IDX;
 		mymap->Set(idx, n);
 	}
@@ -159,13 +170,15 @@ int main(int argc, char* argv[])
 		printf("Page %d = %d\n", i, counts[i]);
 	}
 #else
-	
-	for (int i = 0; i < NVM_SIZE_IN_BYTES / ALLOCATOR_BYTES_PER_BIT; i++)
+	if (need_leveling)
 	{
-		if (counters[i])
+		for (int i = 0; i < NVM_SIZE_IN_BYTES / ALLOCATOR_BYTES_PER_BIT; i++)
 		{
-			cnt_sum += counters[i];
-			printf("Page %d = %d\n", i, counters[i].load());
+			if (counters[i])
+			{
+				cnt_sum += counters[i];
+				printf("Page %d = %d\n", i, counters[i].load());
+			}
 		}
 	}
 #endif
