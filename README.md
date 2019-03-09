@@ -30,6 +30,7 @@ Compile Zydis (in quail/quail/third_party):
 cd third_party
 git clone https://github.com/zyantific/zydis
 cd zydis
+git reset --hard 9ec1e0c4d17bf08f17575e25b0c2cf70c5cc879b
 mkdir build && cd build
 echo "set(CMAKE_C_FLAGS  \"${CMAKE_C_FLAGS} -fPIC\")" >>../CMakeLists.txt
 cmake ..
@@ -51,5 +52,6 @@ You should now in the directory of "quail/quail". Then make PFishHook with Quail
 make inline_hook
 make lib
 make lib2
+make test
 ```
 Now you can find "libquail.so" and "libquail2.so" in quail/quail/bin.
